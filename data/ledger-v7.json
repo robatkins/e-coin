@@ -1,0 +1,194 @@
+{
+  "format": "ecoin-ledger-snapshot",
+  "version": 1,
+  "savedAt": "2026-06-23T04:27:21.188Z",
+  "checksum": "a64ecbec8e0dfda132c6999248e6f538a9477d9476eb0b9c97603c576ba6ec0d",
+  "ledger": {
+    "accounts": {
+      "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d": {
+        "balance": 20000000000000,
+        "nonce": 1
+      },
+      "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4": {
+        "balance": 0,
+        "nonce": 3
+      }
+    },
+    "blocks": [
+      {
+        "height": 0,
+        "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "timestamp": 1782158749654,
+        "transactions": [
+          {
+            "id": "35f27481016e37b1a8eb2613cdf0992aa26f7172a75e14f7501012c5b761cdbe",
+            "type": "genesis",
+            "network": "E-Coin Aurora Devnet",
+            "to": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "amount": 20000000000000,
+            "maxSupply": 20000000000000
+          }
+        ],
+        "stateRoot": "5bc7e4405b6135961d4cac476064e6fe1843fbc8d185307c385bebb74d8177cb",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "1d6510184c58670fe3f5d730cf59448fd0c81473ac485c678014da9048717d2b"
+      },
+      {
+        "height": 1,
+        "previousHash": "1d6510184c58670fe3f5d730cf59448fd0c81473ac485c678014da9048717d2b",
+        "timestamp": 1782158864978,
+        "transactions": [
+          {
+            "id": "5b15629a33dd24eb60d9bc9e2fc92126a3113cfeac482259de6be63053a7fc05",
+            "type": "faucet",
+            "from": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "to": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "amount": 25000000,
+            "timestamp": 1782158864978
+          }
+        ],
+        "stateRoot": "5c6a51f36effab9e06064ea2b64744622f49bd66c2bdb0d13aad00ab6986ae5f",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "a19ef6fe5326cefde34b0c33b65ea57cc4db3f5dee030d1eb824b44bccba2dda"
+      },
+      {
+        "height": 2,
+        "previousHash": "a19ef6fe5326cefde34b0c33b65ea57cc4db3f5dee030d1eb824b44bccba2dda",
+        "timestamp": 1782158905879,
+        "transactions": [
+          {
+            "from": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "to": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "amount": 24999000,
+            "fee": 1000,
+            "nonce": 1,
+            "memo": "",
+            "timestamp": 1782158900549,
+            "publicKey": {
+              "alg": "Ed25519",
+              "crv": "Ed25519",
+              "ext": true,
+              "key_ops": [
+                "verify"
+              ],
+              "kty": "OKP",
+              "x": "BXij6G0DnrS-fPjIn4LXbVXxSk8QYmlJ1h-MNkmqQEs"
+            },
+            "signature": "XjJthtn2NKh2e3V3syZXi4gxbUsFLSi4FUkHmsOxqM6Zy872L2qRWC_orhW54f7y_mXCKXKyuxuSEIOp5nd0Bw",
+            "id": "b55f3e34ed8b6b4912e174f488b7e7483b5ddc76ff5df889a2e27b5c8b779f1e",
+            "type": "transfer",
+            "queuedAt": 1782158900591
+          }
+        ],
+        "stateRoot": "8b43dcc1f5d7a8475d7a262a62bc7284f8b20fec22f57cd8b903fc3991d58393",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "84d0ac03f788a611f84a4ae0883817bb9d2733b1a273cc0394d45c4cc10cb85b"
+      },
+      {
+        "height": 3,
+        "previousHash": "84d0ac03f788a611f84a4ae0883817bb9d2733b1a273cc0394d45c4cc10cb85b",
+        "timestamp": 1782188739074,
+        "transactions": [
+          {
+            "from": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "to": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "amount": 1000000000,
+            "fee": 1000,
+            "nonce": 1,
+            "memo": "For a test.",
+            "timestamp": 1782188737954,
+            "publicKey": {
+              "crv": "Ed25519",
+              "x": "afQ_bAa2GCtWQhaUtbVw2ZK6T6DFCAjBoZpsYLp7K9E",
+              "kty": "OKP"
+            },
+            "signature": "Vph4-VhE1-eAqTv5k6zE-hIhxlHA8JvpCvAuKgn2eZAj_39IJuRaN2ha9W6mDCSuulE8KntKq2rp48BcPQW4Bg",
+            "id": "14356c7dbe111288197974d6a1039b13ee37dc28fbd4a58fa17159f14c3ca9c6",
+            "type": "transfer",
+            "queuedAt": 1782188737957
+          }
+        ],
+        "stateRoot": "948be7ee92b30fda30b0ad7e41e56f7bbd3070c96b7933743c64a3782447e13d",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "c015434f8c063bac591feb3ba58c2240cb85f067e8b1ef4188bdaa6c09291262"
+      },
+      {
+        "height": 4,
+        "previousHash": "c015434f8c063bac591feb3ba58c2240cb85f067e8b1ef4188bdaa6c09291262",
+        "timestamp": 1782188787114,
+        "transactions": [
+          {
+            "from": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "to": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "amount": 500000000,
+            "fee": 1000,
+            "nonce": 2,
+            "memo": "A second test.",
+            "timestamp": 1782188783498,
+            "publicKey": {
+              "alg": "Ed25519",
+              "crv": "Ed25519",
+              "ext": true,
+              "key_ops": [
+                "verify"
+              ],
+              "kty": "OKP",
+              "x": "BXij6G0DnrS-fPjIn4LXbVXxSk8QYmlJ1h-MNkmqQEs"
+            },
+            "signature": "yOx58uEb8Re9XXi7g3ueBAa183za4eSqzp0q-aQ9n8V4o0sWxxr1kfFObTZ7zTyPirpyJm9KHY-XG8fDtKjmCg",
+            "id": "e1d53eacb994cbd5c0945815aead30826ee0067242c8eb033d9efee564a6f8a8",
+            "type": "transfer",
+            "queuedAt": 1782188783500
+          }
+        ],
+        "stateRoot": "f60c28c9469c032a59feea1ee16a219e9b9f5ce8d49df549fe0fac73b851594e",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "b4929ac485b26d20c33283331a34f5df1fe1b6bc3ace5ff21cb19676d7c3826f"
+      },
+      {
+        "height": 5,
+        "previousHash": "b4929ac485b26d20c33283331a34f5df1fe1b6bc3ace5ff21cb19676d7c3826f",
+        "timestamp": 1782188841187,
+        "transactions": [
+          {
+            "from": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "to": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "amount": 499998000,
+            "fee": 1000,
+            "nonce": 3,
+            "memo": "A third test.",
+            "timestamp": 1782188839705,
+            "publicKey": {
+              "alg": "Ed25519",
+              "crv": "Ed25519",
+              "ext": true,
+              "key_ops": [
+                "verify"
+              ],
+              "kty": "OKP",
+              "x": "BXij6G0DnrS-fPjIn4LXbVXxSk8QYmlJ1h-MNkmqQEs"
+            },
+            "signature": "pMMTGo5qTEv91RbqMA89K3c9sYAS5ABClvICLN8VtxNeVFHWrUsKS96rWdXAkyuC8pSOp5xKbnNp7dgJKP0RCw",
+            "id": "f9e8d32d4bc8fa112be4205b83e7af9233d61d1675c9486b9116e0baf22cecdc",
+            "type": "transfer",
+            "queuedAt": 1782188839707
+          }
+        ],
+        "stateRoot": "d0f12ae65f7dc998392db393591f0122b8e58f6566d6f1ab76067ef81bd79f26",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "d992292ead9b695eacacc2f41fd1bfbaa06f6b6dcc6957377b93eb3552018f48"
+      }
+    ],
+    "pending": [],
+    "contracts": {},
+    "totalSupply": 20000000000000,
+    "feesRecycled": 4000,
+    "marketVolumeUsdCents": 0,
+    "marketPurchases": 0,
+    "marketOrders": [],
+    "marketTrades": [],
+    "marketOrderSequence": 0,
+    "marketLockedEc": {},
+    "marketPositionEc": {}
+  }
+}

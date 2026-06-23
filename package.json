@@ -1,0 +1,15 @@
+{
+  "name": "ecoin",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "description": "E-Coin original account-based cryptocurrency devnet and browser wallet",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

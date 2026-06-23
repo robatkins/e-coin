@@ -1,0 +1,68 @@
+{
+  "format": "ecoin-ledger-snapshot",
+  "version": 1,
+  "savedAt": "2026-06-22T15:50:55.779Z",
+  "checksum": "65f11ddeabf8038ba65bce54b2daa971015652864f35a7d0f80a7cd0859cbbe7",
+  "ledger": {
+    "accounts": {
+      "ec1d3a8417b486a6550a9ad68d499b819ce09618e": {
+        "balance": 25000000,
+        "nonce": 0
+      },
+      "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4": {
+        "balance": 25000000,
+        "nonce": 0
+      }
+    },
+    "blocks": [
+      {
+        "height": 0,
+        "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "timestamp": 1782139017409,
+        "transactions": [
+          {
+            "type": "genesis",
+            "network": "E-Coin Aurora Devnet"
+          }
+        ],
+        "stateRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "79bd076f24b572b7e7604bdaef70803ad132006ad704566f9e88ae8084bd6b30"
+      },
+      {
+        "height": 1,
+        "previousHash": "79bd076f24b572b7e7604bdaef70803ad132006ad704566f9e88ae8084bd6b30",
+        "timestamp": 1782139084564,
+        "transactions": [
+          {
+            "id": "4dad7c40004ee40da301eeafbb3da385a22c5dab6c13a5a28fef45131486ec4e",
+            "type": "faucet",
+            "to": "ec1d3a8417b486a6550a9ad68d499b819ce09618e",
+            "amount": 25000000,
+            "timestamp": 1782139084564
+          }
+        ],
+        "stateRoot": "99b4d036925c0fe2ffdb3be5f795178b660214fb848f1ce5ef2f133d6fa5d3df",
+        "hash": "c0daab273bd35b5952dd3402a1a871b5578105a2b8275bbf09172033456d450c"
+      },
+      {
+        "height": 2,
+        "previousHash": "c0daab273bd35b5952dd3402a1a871b5578105a2b8275bbf09172033456d450c",
+        "timestamp": 1782139829423,
+        "transactions": [
+          {
+            "id": "f679f506650618a75a465ffc9cdfb966be2ce247dc56f10a13537fef7b6c5554",
+            "type": "faucet",
+            "to": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "amount": 25000000,
+            "timestamp": 1782139829423
+          }
+        ],
+        "stateRoot": "1527e66a00fb18e1d435aaa6f130264405d501193094ff0bc283afc284fcc9af",
+        "hash": "d6eb78a159f806d078dcfe09bc761b6e9e0328055baecad95f8df8dfb06be860"
+      }
+    ],
+    "pending": [],
+    "totalSupply": 50000000,
+    "burned": 0
+  }
+}

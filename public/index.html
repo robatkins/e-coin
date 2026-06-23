@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0d1110">
+  <title>E-Coin — Aurora Devnet</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <header>
+    <a class="brand" href="#"><span class="coin-mark">E</span><span>E-COIN</span></a>
+    <nav class="top-nav" aria-label="Primary"><button class="nav-link active" data-view="wallet" type="button">WALLET</button><button class="nav-link" data-view="data" type="button">DATA</button><button class="nav-link" data-view="learn" type="button">LEARN</button></nav>
+    <div class="network-pill"><i></i><span id="network-state">CONNECTING</span><b id="height">—</b></div>
+  </header>
+
+  <main>
+    <div id="wallet-view">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">YOUR WALLET / YOUR SIGNATURE</p>
+        <h1>Money that moves<br><em>at your command.</em></h1>
+      </div>
+      <p class="intro">An original account-based digital currency experiment. Sign locally, settle openly, and watch the ledger change.</p>
+    </section>
+
+    <section class="grid">
+      <article class="wallet-card panel">
+        <div class="panel-head"><span>MY WALLET</span><div class="wallet-switch"><select id="wallet-picker" aria-label="Active wallet"></select><button id="open-wallet-manager" type="button" aria-label="Create wallet">+</button></div></div>
+        <p class="balance-label">AVAILABLE BALANCE</p>
+        <div class="balance"><span id="balance">0.000000</span><small>EC</small></div>
+        <div class="wallet-insights">
+          <div><span>RECEIVED</span><b id="wallet-received">—</b></div>
+          <div><span>SENT</span><b id="wallet-sent">—</b></div>
+          <div><span>ACTIVITY</span><b id="wallet-transactions">—</b></div>
+        </div>
+        <div class="wallet-intelligence">
+          <div><span>SAFE TO SPEND</span><b id="wallet-safe-spend">-</b></div>
+          <div><span>FEE ADVICE</span><b id="wallet-fee-advice">-</b></div>
+          <div><span>NETWORK PRESSURE</span><b id="wallet-pressure">-</b></div>
+          <div><span>READINESS</span><b id="wallet-readiness">-</b></div>
+          <div><span>TOP COUNTERPARTIES</span><b id="wallet-counterparties">-</b></div>
+          <div><span>NEXT EVENT</span><b id="wallet-next-event">-</b></div>
+          <p id="wallet-guidance">Analyzing your wallet state...</p>
+        </div>
+        <div class="wallet-actions-panel">
+          <div class="section-title compact"><div><p class="eyebrow">SMART ACTIONS</p><h2>Suggested next steps</h2></div><small>UPDATED ON REFRESH</small></div>
+          <div id="wallet-actions" class="wallet-actions-list"><p class="empty">No suggestions yet.</p></div>
+        </div>
+        <div class="wallet-history-panel">
+          <div class="section-title compact"><div><p class="eyebrow">WALLET HISTORY</p><h2>Balance trend</h2></div><small>LOCAL SNAPSHOTS</small></div>
+          <div class="wallet-history-hero">
+            <div><span>SNAPSHOTS</span><b id="wallet-history-count">0</b></div>
+            <div><span>RECENT CHANGE</span><b id="wallet-history-delta">—</b></div>
+            <div><span>HIGH / LOW</span><b id="wallet-history-range">—</b></div>
+          </div>
+          <svg id="wallet-history-chart" viewBox="0 0 720 200" role="img" aria-label="Wallet balance trend"><g class="chart-gridlines"></g><path class="area" d=""></path><polyline points=""></polyline></svg>
+          <div class="chart-axis"><span id="wallet-history-min">—</span><span id="wallet-history-max">—</span></div>
+        </div>
+        <div class="wallet-diagnostics-panel">
+          <div class="section-title compact"><div><p class="eyebrow">WALLET DIAGNOSTICS</p><h2>Health and usage</h2></div><small>LOCAL ANALYSIS</small></div>
+          <div class="wallet-diagnostics-grid">
+            <div><span>VOLATILITY</span><b id="wallet-volatility">—</b></div>
+            <div><span>NET SHIFT</span><b id="wallet-net-shift">—</b></div>
+            <div><span>AVG BALANCE</span><b id="wallet-avg-balance">—</b></div>
+            <div><span>USAGE RISK</span><b id="wallet-risk-score">—</b></div>
+          </div>
+          <p id="wallet-diagnostics-copy" class="microcopy">Wallet diagnostics summarize local history and recommend the safest next step.</p>
+        </div>
+        <div class="address-row">
+          <code id="address">Creating wallet…</code>
+          <button class="icon-button" id="copy-address" title="Copy address">COPY</button>
+        </div>
+        <div class="receive-panel">
+          <div class="section-title compact"><div><p class="eyebrow">RECEIVE FUNDS</p><h2>Share this wallet</h2></div><small>LOCAL REQUEST URI</small></div>
+          <div class="receive-grid">
+            <svg id="receive-code" viewBox="0 0 216 216" role="img" aria-label="Wallet receive code"></svg>
+            <div class="receive-copy">
+              <div><span>REQUEST URI</span><code id="receive-uri">—</code></div>
+              <div><span>ADDRESS</span><b id="receive-address">—</b></div>
+              <div class="receive-actions">
+                <button class="button ghost" id="copy-request" type="button">COPY REQUEST</button>
+                <button class="button ghost" id="share-request" type="button">SHARE</button>
+              </div>
+              <p class="microcopy">Paste the request URI into the recipient field to prefill an address. The code is local and privacy-preserving.</p>
+            </div>
+          </div>
+        </div>
+        <div class="wallet-security"><span>WALLET VAULT</span><b id="vault-state">LOCAL STORAGE</b><button class="vault-action" id="vault-action" type="button">ENABLE VAULT</button></div>
+        <div class="wallet-actions">
+          <button class="button primary" id="faucet">GET 25 TEST EC</button>
+          <button class="button ghost" id="open-buy" type="button">BUY WITH USD</button>
+          <button class="button ghost" id="backup">BACKUP</button>
+          <label class="button ghost" for="import-key">IMPORT</label>
+          <input id="import-key" type="file" accept="application/json" hidden>
+        </div>
+        <p class="microcopy">This key stays in this browser. Aurora is a devnet—test coins have no monetary value.</p>
+      </article>
+
+      <article class="send-card panel">
+        <div class="panel-head"><span>SEND E-COIN</span><span class="fee-summary">FEE <select id="fee-tier" aria-label="Transaction speed"><option value="economy">ECONOMY</option><option value="standard" selected>STANDARD</option><option value="priority">PRIORITY</option></select> <b id="fee-display">0.001 EC</b><small id="fee-advice">RECOMMENDED STANDARD</small></span></div>
+        <form id="send-form" autocomplete="off">
+          <label>RECIPIENT ADDRESS<input id="recipient" required pattern="ec1[0-9a-f]{38}" placeholder="ec1…" autocomplete="off"></label>
+          <div class="recipient-tools">
+            <select id="contact-picker" aria-label="Saved contacts"><option value="">SAVED CONTACTS</option></select>
+            <button class="field-action" id="open-contact" type="button">+ SAVE CONTACT</button>
+          </div>
+          <div class="field-row">
+            <div><div class="field-label"><label for="amount">AMOUNT</label><div class="field-actions"><button class="field-action" id="max-amount" type="button">MAX</button><button class="field-action" id="smart-max" type="button">SAFE MAX</button></div></div><input id="amount" required type="number" min="0.000001" step="0.000001" placeholder="0.000000"></div>
+            <label>MEMO <span>OPTIONAL</span><input id="memo" maxlength="96" placeholder="What is this for?"></label>
+          </div>
+          <div class="send-intel"><span id="composer-status">ENTER A TRANSFER TO ANALYZE</span><b id="projected-balance">BALANCE AFTER —</b></div>
+          <div class="transfer-panel">
+            <div class="section-title compact"><div><p class="eyebrow">SMART DRAFTS</p><h2>Recent sends</h2></div><small>LEARNED LOCALLY</small></div>
+            <div id="transfer-summary" class="search-summary">No recent transfers yet.</div>
+            <div id="transfer-list" class="transfer-list"><p class="empty">Recent outgoing transfers will appear here for one-click reuse.</p></div>
+          </div>
+          <div class="template-panel">
+            <div class="section-title compact"><div><p class="eyebrow">TRANSFER TEMPLATES</p><h2>Reusable payments</h2></div><small>LOCAL ONLY</small></div>
+            <div class="template-form">
+              <input id="template-name" type="text" maxlength="24" placeholder="Template name">
+              <button class="button ghost" id="save-template" type="button">SAVE TEMPLATE</button>
+            </div>
+            <div id="template-summary" class="search-summary">Save a filled transfer to reuse it later.</div>
+            <div id="template-list" class="template-list"><p class="empty">No templates yet.</p></div>
+          </div>
+          <div class="plan-panel">
+            <div class="section-title compact"><div><p class="eyebrow">PAYMENT PLANS</p><h2>Recurring and scheduled sends</h2></div><small>LOCAL REMINDERS</small></div>
+            <div class="plan-form">
+              <input id="plan-name" type="text" maxlength="28" placeholder="Plan name">
+              <input id="plan-recipient" type="text" pattern="ec1[0-9a-f]{38}" placeholder="Recipient address">
+              <input id="plan-amount" type="number" min="0.000001" step="0.000001" placeholder="Amount EC">
+              <select id="plan-cadence" aria-label="Plan cadence">
+                <option value="once">ONE-TIME</option>
+                <option value="daily">DAILY</option>
+                <option value="weekly" selected>WEEKLY</option>
+                <option value="monthly">MONTHLY</option>
+              </select>
+              <input id="plan-next-run" type="datetime-local">
+              <input id="plan-memo" type="text" maxlength="96" placeholder="Memo (optional)">
+              <button class="button ghost" id="plan-fill-current" type="button">USE CURRENT DRAFT</button>
+              <button class="button primary" id="save-plan" type="button">SAVE PLAN</button>
+            </div>
+            <div id="plan-summary" class="search-summary">Create a reminder for future transfers or repeatable payments.</div>
+            <div id="plan-list" class="template-list"><p class="empty">No payment plans yet.</p></div>
+          </div>
+          <button class="button send" type="submit">REVIEW TRANSFER <span>→</span></button>
+        </form>
+      </article>
+    </section>
+
+    <section class="contracts-section">
+      <div class="section-title"><div><p class="eyebrow">PROGRAMMABLE E-COIN</p><h2>Smart contracts</h2></div><button class="button primary" id="open-contract" type="button">NEW CONTRACT</button></div>
+      <div class="contract-summary"><div><span>CONTRACTS</span><b id="contract-count">0</b></div><div><span>LOCKED BY THIS WALLET</span><b id="contract-locked">0.000000 EC</b></div><p>Deploy audited templates for one-time releases or scheduled vesting. Execution is deterministic and verified in every block.</p></div>
+      <div class="contract-list" id="contract-list"><p class="empty">No contracts for this wallet yet.</p></div>
+    </section>
+
+    <section class="ledger-section">
+      <div class="section-title"><div><p class="eyebrow">OPEN LEDGER</p><h2>Latest activity</h2></div><button class="button ghost" id="refresh">REFRESH</button></div>
+      <div class="stats">
+        <div><span>SUPPLY</span><b id="supply">—</b></div><div><span>FEES RECYCLED</span><b id="burned">—</b></div><div><span>ACCOUNTS</span><b id="accounts">—</b></div><div><span>MEMPOOL</span><b id="mempool">—</b></div><div><span>CHAIN INTEGRITY</span><b id="integrity">CHECKING</b></div>
+      </div>
+      <div class="network-pulse"><span>NETWORK PULSE</span><div><small>SETTLED</small><b id="settled-count">—</b></div><div><small>AVG BATCH</small><b id="average-batch">—</b></div><div><small>CAPACITY</small><b id="block-capacity">—</b></div><div><small>STORAGE</small><b id="storage-health">—</b></div><div><small>TRANSFER RATE</small><b id="transfer-rate">—</b></div></div>
+      <div class="blocks" id="blocks"><p class="empty">No activity yet.</p></div>
+      <button class="button ghost load-more" id="load-more" type="button" hidden>LOAD OLDER BLOCKS</button>
+    </section>
+    </div>
+
+    <section id="data-view" class="data-view" hidden>
+      <div class="data-hero"><div><p class="eyebrow">MARKET + PROTOCOL TELEMETRY</p><h1>See the system<br><em>as it moves.</em></h1></div><div class="price-lockup"><span>EC / USD</span><b id="data-price">$0.000000</b><small id="data-mode">DEVNET MARKET</small></div></div>
+      <div class="data-metrics"><div><span>MARKET CAP</span><b id="data-market-cap">—</b></div><div><span>USD VOLUME</span><b id="data-volume">—</b></div><div><span>CIRCULATING</span><b id="data-circulating">—</b></div><div><span>TREASURY</span><b id="data-treasury">—</b></div><div><span>PURCHASES</span><b id="data-purchases">—</b></div><div><span>BLOCK CAPACITY</span><b id="data-capacity">—</b></div></div>
+      <div class="data-intelligence">
+        <div class="intel-score"><span>SYSTEM HEALTH</span><b id="data-health-score">—</b><small id="data-health-note">Analyzing the network.</small></div>
+        <div class="intel-score"><span>PRICE MOMENTUM</span><b id="data-price-momentum">—</b><small id="data-price-note">Waiting for market movement.</small></div>
+        <div class="intel-score"><span>BLOCK ETA</span><b id="data-block-eta">—</b><small id="data-block-note">Predicting the next seal.</small></div>
+        <div class="intel-summary">
+          <span>AI-LIKE RECOMMENDATION</span>
+          <p id="data-recommendation">The system will summarize current pressure, trend, and treasury state here.</p>
+        </div>
+      </div>
+      <div class="data-explorer">
+        <div class="section-title"><div><p class="eyebrow">LEDGER EXPLORER</p><h2>Search the chain</h2></div><small>BLOCKS, TRANSACTIONS, ACCOUNTS, CONTRACTS</small></div>
+        <div class="explorer-tools">
+          <input id="data-search" type="search" placeholder="Search by block height, hash, address, memo, or contract id" autocomplete="off">
+          <button class="button ghost" id="clear-search" type="button">CLEAR</button>
+        </div>
+        <div id="search-summary" class="search-summary">Try a block height, address, or transaction id.</div>
+        <div id="search-results" class="search-results"><p class="empty">No search query yet.</p></div>
+      </div>
+      <div class="watchlist-panel">
+        <div class="section-title"><div><p class="eyebrow">ADDRESS WATCHLIST</p><h2>Monitor important accounts</h2></div><small>LOCAL ONLY</small></div>
+        <form id="watchlist-form" class="watchlist-form" autocomplete="off">
+          <input id="watchlist-address" type="text" pattern="ec1[0-9a-f]{38}" placeholder="Add an address to watch">
+          <button class="button ghost" type="submit">ADD</button>
+          <button class="button ghost" id="watchlist-seed" type="button">SEED FROM COUNTERPARTIES</button>
+        </form>
+        <div id="watchlist-summary" class="search-summary">Add addresses you want to track across the ledger.</div>
+        <div id="watchlist-alerts" class="watchlist-alerts"></div>
+        <div id="watchlist-list" class="watchlist-list"><p class="empty">No watched addresses yet.</p></div>
+      </div>
+      <div class="alerts-panel">
+        <div class="section-title"><div><p class="eyebrow">ALERT CENTER</p><h2>Upcoming events</h2></div><small>WALLETS + WATCHLIST</small></div>
+        <div id="alerts-summary" class="search-summary">Waiting for contract timelines to appear.</div>
+        <div id="alerts-list" class="alerts-list"><p class="empty">No upcoming events yet.</p></div>
+      </div>
+      <div class="alerts-panel">
+        <div class="section-title"><div><p class="eyebrow">MARKET ALERTS</p><h2>Watch price bands</h2></div><small>LOCAL ONLY</small></div>
+        <form id="market-alert-form" class="watchlist-form" autocomplete="off">
+          <input id="market-alert-name" maxlength="32" placeholder="Alert name, e.g. Buy zone">
+          <select id="market-alert-direction" aria-label="Alert direction"><option value="below">FALLS BELOW</option><option value="above">RISES ABOVE</option></select>
+          <input id="market-alert-price" type="number" min="0.000001" step="0.000001" placeholder="Price USD / EC">
+          <button class="button ghost" id="market-alert-current" type="button">USE CURRENT</button>
+          <button class="button primary" type="submit">ADD ALERT</button>
+        </form>
+        <div id="market-alert-summary" class="search-summary">Create a trigger for the current market quote.</div>
+        <div id="market-alert-list" class="alerts-list"><p class="empty">No market alerts yet.</p></div>
+      </div>
+      <div class="orderbook-panel">
+        <div class="section-title"><div><p class="eyebrow">ORDER BOOK</p><h2>Buy and sell with USD quotes</h2></div><small>SIMULATED USD</small></div>
+        <div class="orderbook-hero">
+          <div><span>BEST BID</span><b id="best-bid">—</b></div>
+          <div><span>BEST ASK</span><b id="best-ask">—</b></div>
+          <div><span>SPREAD</span><b id="book-spread">—</b></div>
+          <div><span>OPEN ORDERS</span><b id="open-orders">—</b></div>
+        </div>
+        <form id="order-form" class="order-form" autocomplete="off">
+          <select id="order-side" aria-label="Order side"><option value="buy">BUY</option><option value="sell">SELL</option></select>
+          <input id="order-amount" type="number" min="0.000001" step="0.000001" placeholder="Amount EC">
+          <input id="order-price" type="number" min="0.000001" step="0.000001" placeholder="Limit price USD / EC">
+          <button class="button primary" id="place-order" type="submit">PLACE ORDER</button>
+          <button class="button ghost" id="market-quote-fill" type="button">FILL WITH MID</button>
+        </form>
+        <div class="book-grid">
+          <article class="book-card"><div class="book-title">BIDS</div><div id="bid-book" class="book-list"><p class="empty">No bids yet.</p></div></article>
+          <article class="book-card"><div class="book-title">ASKS</div><div id="ask-book" class="book-list"><p class="empty">No asks yet.</p></div></article>
+          <article class="book-card"><div class="book-title">YOUR ORDERS</div><div id="your-orders" class="book-list"><p class="empty">No open orders yet.</p></div></article>
+          <article class="book-card"><div class="book-title">TRADE TAPE</div><div id="trade-tape" class="book-list"><p class="empty">No trades yet.</p></div></article>
+        </div>
+      </div>
+      <div class="chart-grid">
+        <article class="chart-card"><div class="chart-head"><div><span>PRICE HISTORY</span><b id="price-change">INTERNAL USD QUOTE</b></div><small>LAST 60 PURCHASES</small></div><svg id="price-chart" viewBox="0 0 720 260" role="img" aria-label="E-Coin USD price history"><g class="chart-gridlines"></g><path class="area" d=""></path><polyline points=""></polyline></svg><div class="chart-axis"><span id="price-min">—</span><span id="price-max">—</span></div></article>
+        <article class="chart-card"><div class="chart-head"><div><span>NETWORK LOAD</span><b>SETTLEMENT BATCHES</b></div><small>RECENT BLOCKS</small></div><svg id="load-chart" viewBox="0 0 720 260" role="img" aria-label="Recent block transaction counts"><g class="chart-gridlines"></g><g class="bars"></g></svg><div class="chart-axis"><span>OLDER</span><span>LATEST</span></div></article>
+      </div>
+      <div class="market-ledger"><div class="section-title"><div><p class="eyebrow">TREASURY MARKET</p><h2>Recent purchases</h2></div><button class="button ghost" id="refresh-data" type="button">REFRESH DATA</button></div><div id="market-history" class="market-history"><p class="empty">No market purchases yet.</p></div></div>
+      <p class="data-disclaimer">This is an internal E-Coin devnet market, not an external exchange price. No real USD, card details, or bank information are collected.</p>
+    </section>
+
+    <section id="learn-view" class="learn-view" hidden>
+      <div class="learn-hero"><p class="eyebrow">E-COIN FIELD GUIDE</p><h1>Know what you sign.<br><em>Own what you learn.</em></h1><p>Walk through the protocol, protect your keys, and test your understanding before moving value.</p></div>
+      <div class="learn-grid">
+        <article class="learn-card"><span>01 / SUPPLY</span><h2>Finite from genesis.</h2><p>Exactly 20,000,000 EC are created in block zero and assigned to the Genesis Treasury. Faucet grants and USD-market purchases move existing treasury coins; fees cycle back into treasury. No path mints additional EC.</p></article>
+        <article class="learn-card"><span>02 / OWNERSHIP</span><h2>Keys authorize value.</h2><p>Your browser creates Ed25519 keypairs. The address identifies the public key; the private key signs a precise transaction. Nodes verify the signature, nonce, timestamp, balance, and fee before accepting it.</p></article>
+        <article class="learn-card"><span>03 / SETTLEMENT</span><h2>Fast, ordered batches.</h2><p>Transactions enter a bounded mempool, reserve funds immediately, and settle in fee-prioritized batches. Nonces preserve account order while per-sender limits keep block capacity fair.</p></article>
+        <article class="learn-card"><span>04 / CONTRACTS</span><h2>Predictable programs.</h2><p>Timelocks release once after a deadline. Vesting divides funds into scheduled releases. Hashlocks release to a beneficiary who reveals the committed secret, or refund the creator after expiry. Every transition is replay-verified.</p></article>
+        <article class="learn-card"><span>05 / REGULATION</span><h2>Rules depend on where you are.</h2><p>Real-world crypto products can trigger money-transmitter, AML/KYC, sanctions, consumer-protection, and tax rules. If a service exchanges value, holds customer funds, or markets an investment, the compliance burden can change quickly by country and state. This app is a devnet sandbox, not legal advice.</p></article>
+        <article class="learn-card"><span>06 / SECURITY</span><h2>Attackers look for shortcuts.</h2><p>Use unique long passwords, enable multi-factor authentication wherever it exists, verify addresses before sending, and keep recovery copies offline. Never share a seed phrase, never approve urgent surprise requests, and treat any promise of guaranteed profit as a red flag.</p></article>
+      </div>
+      <div class="safety-panel"><div><p class="eyebrow">WALLET SAFETY</p><h2>Three habits beat clever attackers.</h2></div><ol><li><b>Encrypt and back up.</b> Enable the wallet vault, use a unique password, and keep an offline backup. NIST guidance favors long, memorable passwords and discourages brittle rules that make people reuse weak ones.</li><li><b>Verify the destination.</b> Compare the beginning and end of an address, review new-recipient warnings, and treat QR codes or copied addresses as untrusted until checked.</li><li><b>Understand finality.</b> A signed transfer or deployed contract cannot be quietly reversed. Test with a small amount first, and remember that crypto scams often rely on urgency, impersonation, and promises of easy money.</li></ol></div>
+      <section class="quiz-card" aria-labelledby="quiz-title"><p class="eyebrow">KNOWLEDGE CHECK</p><h2 id="quiz-title">Can you operate safely?</h2><div id="quiz-question"></div><div id="quiz-options" class="quiz-options"></div><div class="quiz-footer"><span id="quiz-progress">QUESTION 1 / 4</span><b id="quiz-score">SCORE 0</b></div></section>
+    </section>
+  </main>
+
+  <div class="review-overlay" id="buy-overlay" role="dialog" aria-modal="true" aria-labelledby="buy-title" hidden>
+    <section class="review-card compact-card">
+      <div class="panel-head"><span>TREASURY MARKET</span><button class="review-close" id="close-buy" type="button" aria-label="Close purchase">×</button></div>
+      <p class="eyebrow">DEVNET USD CHECKOUT</p><h2 id="buy-title">Buy from genesis.</h2>
+      <form id="buy-form" autocomplete="off"><label for="buy-usd">USD AMOUNT</label><input id="buy-usd" type="number" min="1" max="1000" step="0.01" value="25.00" required><div class="buy-quote"><span>MARKET PRICE <b id="buy-price">—</b></span><strong id="buy-receive">— EC</strong><small id="buy-wallet">TO —</small></div><label class="demo-confirm"><input id="buy-confirm" type="checkbox" required> I understand this settles devnet EC without charging real USD.</label><button class="button primary contact-save" id="buy-submit" type="submit">COMPLETE DEVNET PURCHASE</button></form>
+      <p class="microcopy">A production on-ramp requires a regulated payment processor, identity controls, regional compliance, and webhook verification. This sandbox intentionally requests no payment credentials.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="wallet-overlay" role="dialog" aria-modal="true" aria-labelledby="wallet-manager-title" hidden>
+    <section class="review-card compact-card">
+      <div class="panel-head"><span>LOCAL WALLET MANAGER</span><button class="review-close" id="close-wallet-manager" type="button" aria-label="Close wallet manager">×</button></div>
+      <p class="eyebrow">MULTI-WALLET CUSTODY</p><h2 id="wallet-manager-title">Create a wallet.</h2>
+      <form id="wallet-form" autocomplete="off"><label for="wallet-name">WALLET NAME</label><input id="wallet-name" required maxlength="24" placeholder="e.g. Savings"><button class="button primary contact-save" type="submit">GENERATE LOCALLY</button></form>
+      <div class="contact-list" id="wallet-list"></div>
+      <p class="microcopy">Every wallet has its own Ed25519 key. Back up each wallet before relying on it.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="vault-overlay" role="dialog" aria-modal="true" aria-labelledby="vault-title" hidden>
+    <section class="review-card compact-card">
+      <div class="panel-head"><span>WALLET VAULT</span><button class="review-close" id="close-vault" type="button" aria-label="Close vault dialog">×</button></div>
+      <p class="eyebrow" id="vault-eyebrow">ENCRYPT LOCAL KEYS</p>
+      <h2 id="vault-title">Protect this browser wallet.</h2>
+      <form id="vault-form" autocomplete="off">
+        <label for="vault-password">PASSWORD</label>
+        <input id="vault-password" type="password" autocomplete="new-password" minlength="8" placeholder="Create a strong password">
+        <div id="vault-confirm-row">
+          <label for="vault-confirm">CONFIRM PASSWORD</label>
+          <input id="vault-confirm" type="password" autocomplete="new-password" minlength="8" placeholder="Repeat the password">
+        </div>
+        <button class="button primary contact-save" type="submit" id="vault-submit">ENABLE VAULT</button>
+      </form>
+      <p class="microcopy" id="vault-copy">This password encrypts every local private key before it is written to storage.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="contract-overlay" role="dialog" aria-modal="true" aria-labelledby="contract-title" hidden>
+    <section class="review-card">
+      <div class="panel-head"><span>SMART CONTRACT BUILDER</span><button class="review-close" id="close-contract" type="button" aria-label="Close contract builder">×</button></div>
+      <p class="eyebrow">AUDITED TEMPLATES</p><h2 id="contract-title">Program a release.</h2>
+      <form id="contract-form" autocomplete="off">
+        <label for="contract-type">TEMPLATE</label><select id="contract-type"><option value="timelock">TIMELOCK / ONE RELEASE</option><option value="vesting">VESTING / SCHEDULED RELEASES</option><option value="hashlock">HASHLOCK / SECRET ESCROW</option></select>
+        <label for="contract-beneficiary">BENEFICIARY</label><input id="contract-beneficiary" required pattern="ec1[0-9a-f]{38}" placeholder="ec1…">
+        <div class="field-row"><label for="contract-amount">AMOUNT<input id="contract-amount" required type="number" min="0.000001" step="0.000001" placeholder="0.000000"></label><label id="unlock-field" for="contract-unlock">UNLOCK TIME<input id="contract-unlock" required type="datetime-local"></label></div>
+        <div class="field-row" id="vesting-fields" hidden><label for="contract-installments">INSTALLMENTS<input id="contract-installments" type="number" min="2" max="52" value="12"></label><label for="contract-interval">EVERY<select id="contract-interval"><option value="60000">1 MINUTE / DEMO</option><option value="86400000">1 DAY</option><option value="604800000" selected>1 WEEK</option><option value="2592000000">30 DAYS</option></select></label></div>
+        <div id="hashlock-fields" hidden><label for="contract-secret">CLAIM SECRET<input id="contract-secret" maxlength="128" autocomplete="off" placeholder="Share privately with the beneficiary"></label><label class="contract-memo-label" for="contract-refund">REFUND DEADLINE<input id="contract-refund" type="datetime-local"></label><div class="hash-preview"><span>SHA-256 COMMITMENT</span><code id="contract-secret-hash">ENTER A SECRET</code></div></div>
+        <label class="contract-memo-label" for="contract-memo">MEMO <span>OPTIONAL</span></label><input id="contract-memo" maxlength="96" placeholder="Purpose of this contract">
+        <div class="contract-preview" id="contract-preview"><span>RELEASE PLAN</span><div><b>ONE RELEASE</b><strong>ENTER AN AMOUNT</strong></div><small>Schedule analysis updates before signing.</small></div>
+        <div class="contract-warning">Funds cannot be recovered early. The protocol releases them automatically after the selected time.</div>
+        <button class="button send" type="submit">SIGN &amp; DEPLOY <span>→</span></button>
+      </form>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="claim-overlay" role="dialog" aria-modal="true" aria-labelledby="claim-title" hidden>
+    <section class="review-card compact-card"><div class="panel-head"><span>HASHLOCK CLAIM</span><button class="review-close" id="close-claim" type="button" aria-label="Close hashlock claim">×</button></div><p class="eyebrow">REVEAL THE PREIMAGE</p><h2 id="claim-title">Unlock escrow.</h2><form id="claim-form" autocomplete="off"><input id="claim-address" type="hidden"><label for="claim-secret">SECRET<input id="claim-secret" maxlength="128" required autocomplete="off" placeholder="Exact secret used at deployment"></label><div class="contract-warning">The secret becomes public in the claim transaction. Never reuse it for a password or another contract.</div><button class="button primary contact-save" type="submit">CLAIM TO BENEFICIARY</button></form></section>
+  </div>
+
+  <div class="review-overlay" id="review-overlay" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>
+    <section class="review-card">
+      <div class="panel-head"><span>TRANSACTION REVIEW</span><button class="review-close" id="cancel-review" type="button" aria-label="Close review">×</button></div>
+      <p class="eyebrow">LOCAL SAFETY CHECK</p>
+      <h2 id="review-title">Review before signing.</h2>
+      <div class="review-amount"><span id="review-amount">—</span><small>EC</small></div>
+      <dl class="review-details">
+        <div><dt>RECIPIENT</dt><dd id="review-recipient">—</dd></div>
+        <div><dt>NETWORK FEE</dt><dd id="review-fee">—</dd></div>
+        <div><dt>BALANCE AFTER</dt><dd id="review-balance">—</dd></div>
+        <div><dt>RECIPIENT HISTORY</dt><dd id="review-history">—</dd></div>
+      </dl>
+      <div class="review-signals" id="review-signals"></div>
+      <div class="review-actions"><button class="button ghost" id="edit-transfer" type="button">EDIT</button><button class="button primary" id="confirm-send" type="button">SIGN &amp; SEND</button></div>
+      <p class="microcopy">Your private key signs only after confirmation and never leaves this browser.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="contact-overlay" role="dialog" aria-modal="true" aria-labelledby="contact-title" hidden>
+    <section class="review-card compact-card">
+      <div class="panel-head"><span>LOCAL ADDRESS BOOK</span><button class="review-close" id="close-contact" type="button" aria-label="Close address book">×</button></div>
+      <p class="eyebrow">QUICK DESTINATIONS</p>
+      <h2 id="contact-title">Save a contact.</h2>
+      <form id="contact-form" autocomplete="off">
+        <label for="contact-name">CONTACT NAME</label><input id="contact-name" maxlength="28" required placeholder="e.g. Treasury">
+        <label class="contact-address-label" for="contact-address">E-COIN ADDRESS</label><input id="contact-address" required pattern="ec1[0-9a-f]{38}" placeholder="ec1…">
+        <button class="button primary contact-save" type="submit">SAVE LOCALLY</button>
+      </form>
+      <div class="contact-list" id="contact-list"></div>
+      <p class="microcopy">Contacts stay in this browser and are never published to the ledger.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="receipt-overlay" role="dialog" aria-modal="true" aria-labelledby="receipt-title" hidden>
+    <section class="review-card receipt-card">
+      <div class="panel-head"><span>SETTLEMENT RECEIPT</span><button class="review-close" id="close-receipt" type="button" aria-label="Close receipt">×</button></div>
+      <p class="eyebrow">COMMITTED / VERIFIED</p>
+      <h2 id="receipt-title">Block <span id="receipt-height">—</span></h2>
+      <div class="receipt-status"><i></i><span>SETTLED ON AURORA</span><time id="receipt-time">—</time></div>
+      <dl class="review-details receipt-details" id="receipt-fields"></dl>
+      <button class="button ghost receipt-copy" id="copy-receipt" type="button">COPY RECEIPT ID</button>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <footer><span>E-COIN / PROTOCOL 08</span><span>BUILT FOR EXPLORATION, NOT SPECULATION</span></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
