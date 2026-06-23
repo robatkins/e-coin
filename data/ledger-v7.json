@@ -1,16 +1,16 @@
 {
   "format": "ecoin-ledger-snapshot",
   "version": 1,
-  "savedAt": "2026-06-23T04:27:21.188Z",
-  "checksum": "a64ecbec8e0dfda132c6999248e6f538a9477d9476eb0b9c97603c576ba6ec0d",
+  "savedAt": "2026-06-23T15:59:27.401Z",
+  "checksum": "a59b45125cc93ec718ba335bf05809b05cfe987f31970ae32800345bc04dabb8",
   "ledger": {
     "accounts": {
       "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d": {
-        "balance": 20000000000000,
-        "nonce": 1
+        "balance": 19990000000000,
+        "nonce": 2
       },
       "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4": {
-        "balance": 0,
+        "balance": 10000000000,
         "nonce": 3
       }
     },
@@ -177,12 +177,40 @@
         "stateRoot": "d0f12ae65f7dc998392db393591f0122b8e58f6566d6f1ab76067ef81bd79f26",
         "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "hash": "d992292ead9b695eacacc2f41fd1bfbaa06f6b6dcc6957377b93eb3552018f48"
+      },
+      {
+        "height": 6,
+        "previousHash": "d992292ead9b695eacacc2f41fd1bfbaa06f6b6dcc6957377b93eb3552018f48",
+        "timestamp": 1782230367401,
+        "transactions": [
+          {
+            "from": "ec115b2a5fc28d679f47450d4ea9c3cb8e118a31d",
+            "to": "ec191b1a1536573670cc63ceaa2ac57f76d4e87a4",
+            "amount": 10000000000,
+            "fee": 1000,
+            "nonce": 2,
+            "memo": "A test.",
+            "timestamp": 1782230364152,
+            "publicKey": {
+              "crv": "Ed25519",
+              "x": "afQ_bAa2GCtWQhaUtbVw2ZK6T6DFCAjBoZpsYLp7K9E",
+              "kty": "OKP"
+            },
+            "signature": "dLChuBjMwMuGSluvYe9jid_Ler_1F60ikmi1QfzrNhuOuFR6CummHX8Wzo8JMWqQ5K0kwkJBHu1kNdWR7G5WDQ",
+            "id": "c27fd293bf3c5c7fe9d9e1deb63b99e81af30a247be0d52b79487b1282b50e1c",
+            "type": "transfer",
+            "queuedAt": 1782230364155
+          }
+        ],
+        "stateRoot": "9f876e0edd9dbe67ece4f7d4f5f68366d398c8d3e996c37333638aeb6093c811",
+        "contractRoot": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "hash": "84f6a6e0160483dddefc3adb0845471da0198c856c591cbd1ba52e44fb688cf9"
       }
     ],
     "pending": [],
     "contracts": {},
     "totalSupply": 20000000000000,
-    "feesRecycled": 4000,
+    "feesRecycled": 5000,
     "marketVolumeUsdCents": 0,
     "marketPurchases": 0,
     "marketOrders": [],

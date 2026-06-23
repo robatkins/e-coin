@@ -1,6 +1,7 @@
-import { decryptWalletVault, encryptWalletVault, stripWalletSecretsFromCollection } from "./vault.js";
+import { decryptRecoveryBundle, decryptWalletVault, encryptRecoveryBundle, encryptWalletVault, stripWalletSecretsFromCollection } from "./vault.js";
 
 const SCALE = 1_000_000;
+const PENDING_TTL_MS = 10 * 60_000;
 let activeFee = 1_000;
 let feeQuote = { economy:1_000, standard:1_000, priority:2_000 };
 const walletKey = "ecoin.wallet.v1";
@@ -13,8 +14,13 @@ const watchlistSnapshotKey = "ecoin.watchlist.snapshot.v1";
 const marketAlertsKey = "ecoin.marketAlerts.v1";
 const walletHistoryKey = "ecoin.walletHistory.v1";
 const paymentPlansKey = "ecoin.paymentPlans.v1";
+const paymentRequestsKey = "ecoin.paymentRequests.v1";
 const recentTransfersKey = "ecoin.recentTransfers.v1";
 const transferTemplatesKey = "ecoin.transferTemplates.v1";
+const transactionGuardKey = "ecoin.transactionGuard.v1";
+const spendJournalKey = "ecoin.spendJournal.v1";
+const sessionSecurityKey = "ecoin.sessionSecurity.v1";
+const recoveryAuditKey = "ecoin.recoveryAudit.v1";
 let wallet;
 let wallets = [];
 let vaultEnvelope = null;
@@ -43,10 +49,27 @@ let walletHistoryByWallet = {};
 let walletHistory = [];
 let paymentPlansByWallet = {};
 let paymentPlans = [];
+let paymentRequestsByWallet = {};
+let paymentRequests = [];
+let walletActivity = [];
+let walletActivitySummary = { inflow:0, outflow:0, fees:0, net:0, counterparties:0, txCount:0, firstSeen:null, lastSeen:null, anomalies:[] };
 let recentTransfersByWallet = {};
 let recentTransfers = [];
 let transferTemplatesByWallet = {};
 let transferTemplates = [];
+let guardPolicies = {};
+let guardPolicy = { dailyLimit:0, reserve:5 * SCALE, knownOnly:false };
+let spendJournalByWallet = {};
+let spendJournal = [];
+let portfolioEntries = [];
+let portfolioUpdatedAt = 0;
+let batchDraft = [];
+let currentContracts = [];
+let contractFlowFilter = "all";
+let pendingRecoveryEnvelope = null;
+let sessionSecurity = { timeoutMinutes:15, lockWhenHidden:true };
+let lastSensitiveActivity = Date.now();
+let recoveryAudit = {};
 
 const $ = (selector) => document.querySelector(selector);
 const format = (micro) => (micro / SCALE).toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
@@ -224,6 +247,7 @@ async function ensureTreasuryWallet() {
   }
   wallets.push({...treasury,version:1,createdAt:new Date().toISOString()});
   wallet=wallets.at(-1);
+  loadTransactionGuard();
   await saveWallets();
 }
 
@@ -257,9 +281,19 @@ async function signMarketCancel(order) {
 
 async function refresh() {
   if (!wallet) return;
-  const [status, account, blocks, mempool, fees, contracts, market] = await Promise.all([api("/status"), api(`/accounts/${wallet.address}`), api("/blocks?limit=10"), api("/mempool"), api("/fees"), api(`/contracts?address=${wallet.address}`),api(`/market?address=${wallet.address}`)]);
+  const [status, account, blocks, mempool, fees, contracts, market, activityResponse] = await Promise.all([
+    api("/status"),
+    api(`/accounts/${wallet.address}`),
+    api(`/blocks?limit=10`),
+    api("/mempool"),
+    api("/fees"),
+    api(`/contracts?address=${wallet.address}`),
+    api(`/market?address=${wallet.address}`),
+    api(`/accounts/${wallet.address}/activity?limit=120`),
+  ]);
   currentStatus=status; marketData=market;
   currentAccount = account;
+  walletActivity = Array.isArray(activityResponse?.activity) ? activityResponse.activity : [];
   feeQuote=fees; applyFeeTier();
   nextBlockAt = status.nextBlockAt; mempoolSize = mempool.size; maxMempoolSize=status.maxMempoolSize;
   $("#balance").textContent = format(account.availableBalance);
@@ -284,16 +318,21 @@ async function refresh() {
   faucet.dataset.label = isTreasury ? "GENESIS SUPPLY" : account.faucetClaimed ? "FAUCET CLAIMED" : "GET 25 TEST EC";
   faucet.textContent = faucet.dataset.label;
   updateComposer();
+  renderBatchComposer();
   loadedBlocks=[...new Map([...blocks,...loadedBlocks].map((block)=>[block.hash,block])).values()].sort((a,b)=>b.height-a.height);
   currentPending=mempool.transactions;
   renderBlocks(loadedBlocks,currentPending); updateLoadMore();
+  renderPendingControl();
   renderContracts(contracts);
   renderWalletIntel(status, account, contracts, market);
   recordWalletHistory(account, market, status);
   renderWalletHistory();
   renderWalletDiagnostics();
   renderPaymentPlans();
+  renderPaymentRequests();
+  renderWalletActivity(walletActivity, account);
   renderData(market,status,blocks);
+  await refreshPortfolio(market, status);
   await refreshWatchlist(account, contracts);
   renderEventCenter(account, contracts);
 }
@@ -316,11 +355,116 @@ function renderBlocks(blocks,pending = []) {
   $("#blocks").innerHTML = pendingRows + confirmedRows || '<p class="empty">No activity yet.</p>';
 }
 
+function renderPendingControl() {
+  if (!$("#pending-list") || !wallet) return;
+  const outgoing = currentPending.filter((tx) => tx.from === wallet.address && tx.type === "transfer").sort((a, b) => a.nonce - b.nonce);
+  const reserved = outgoing.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
+  const capacity = Math.max(1, currentStatus?.metrics?.blockCapacity || 1);
+  const nextEta = outgoing.length ? Math.max(0, nextBlockAt - Date.now()) : 0;
+  $("#pending-own-count").textContent = `${outgoing.length} TRANSFER${outgoing.length === 1 ? "" : "S"}`;
+  $("#pending-own-value").textContent = `${format(reserved)} EC`;
+  $("#pending-own-eta").textContent = outgoing.length ? `${formatDuration(nextEta)} / ~${Math.max(1, Math.ceil(outgoing.length / capacity))} BLOCKS` : "—";
+  if (!outgoing.length) {
+    $("#pending-guidance").textContent = "No outgoing transfers are waiting for settlement.";
+    $("#pending-list").innerHTML = '<p class="empty">Queued transfers will appear here with fee and expiry intelligence.</p>';
+    return;
+  }
+  const urgentCount = outgoing.filter((tx) => PENDING_TTL_MS - (Date.now() - (tx.queuedAt ?? tx.timestamp)) < 2 * 60_000 || tx.fee < feeQuote.standard).length;
+  $("#pending-guidance").textContent = urgentCount
+    ? `${urgentCount} transfer${urgentCount === 1 ? " needs" : "s need"} attention because its fee is below the current standard or its queue lifetime is running low.`
+    : "The queue looks healthy. Fee replacement is available if network conditions change before settlement.";
+  $("#pending-list").innerHTML = outgoing.map((tx) => {
+    const position = currentPending.findIndex((candidate) => candidate.id === tx.id) + 1;
+    const age = Math.max(0, Date.now() - (tx.queuedAt ?? tx.timestamp));
+    const expiresIn = Math.max(0, PENDING_TTL_MS - age);
+    const recommendedFee = Math.max(Math.ceil(tx.fee * 1.1), feeQuote.priority);
+    const extraFee = recommendedFee - tx.fee;
+    const lowFee = tx.fee < feeQuote.standard;
+    const urgent = expiresIn < 2 * 60_000 || lowFee;
+    const canBump = vaultState !== "locked" && currentAccount.availableBalance >= extraFee;
+    const contact = contacts.find((entry) => entry.address === tx.to);
+    return `<article class="pending-item ${urgent ? "urgent" : ""}">
+      <div><b>${escapeHtml(contact?.name || short(tx.to, 11))} · ${escapeHtml(format(tx.amount))} EC</b><p>Nonce ${tx.nonce} · queue position ${position} · fee ${escapeHtml(format(tx.fee))} EC · expires in ${escapeHtml(formatDuration(expiresIn))}</p><div class="pending-tags"><span class="pending-tag ${lowFee ? "warning" : ""}">${lowFee ? "BELOW STANDARD" : "FEE HEALTHY"}</span><span class="pending-tag">${Math.max(1, Math.ceil(position / capacity))} BLOCK EST.</span><span class="pending-tag">${escapeHtml(relativeTime(tx.queuedAt ?? tx.timestamp))}</span></div></div>
+      <div class="pending-speed"><span>+${escapeHtml(format(extraFee))} EC</span><button type="button" data-speed-up="${escapeHtml(tx.id)}" ${canBump ? "" : "disabled"}>SPEED UP</button></div>
+    </article>`;
+  }).join("");
+}
+
 function renderContracts(contracts) {
+  currentContracts = contracts;
   $("#contract-count").textContent=contracts.length;
   const locked=contracts.filter((contract)=>contract.creator===wallet.address&&["locked","vesting"].includes(contract.status)).reduce((sum,contract)=>sum+contract.amount-(contract.releasedAmount??0),0);
   $("#contract-locked").textContent=`${format(locked)} EC`;
   $("#contract-list").innerHTML=contracts.length ? contracts.map((contract)=>`<div class="contract-row"><span class="contract-status ${contract.status}">${contract.contractType.toUpperCase()} / ${contract.status.toUpperCase()}</span><span>${escapeHtml(format(contract.amount-(contract.releasedAmount??0)))} EC remaining → ${escapeHtml(short(contract.beneficiary,10))}</span><code title="${contract.address}">${escapeHtml(short(contract.address,12))}</code>${contract.contractType==="hashlock"&&contract.status==="locked"?`<button class="contract-claim" type="button" data-claim="${contract.address}">CLAIM</button>`:`<time>${contract.status==="released"?"RELEASED":contract.status==="refunded"?"REFUNDED":contract.contractType==="vesting"?`${contract.releasedInstallments}/${contract.installments} PAID`:new Date(contract.unlockTime).toLocaleDateString()}</time>`}</div>`).join("") : '<p class="empty">No contracts for this wallet yet.</p>';
+  renderContractIntelligence(contracts);
+}
+
+function contractTimelineRows(contracts = currentContracts) {
+  const rows = [];
+  for (const contract of contracts) {
+    if (!["locked", "vesting"].includes(contract.status)) continue;
+    const remaining = contract.amount - (contract.releasedAmount ?? 0);
+    if (contract.contractType === "hashlock") {
+      const isBeneficiary = contract.beneficiary === wallet.address;
+      rows.push({ contract, dueAt:contract.refundTime, amount:remaining, direction:"incoming", kind:isBeneficiary ? "CLAIM DEADLINE" : "REFUND FALLBACK", detail:isBeneficiary ? "Reveal the correct secret before expiry" : "Returns only if the beneficiary does not claim", installment:1 });
+      continue;
+    }
+    const installments = contract.installments ?? 1;
+    const released = contract.releasedInstallments ?? 0;
+    const baseAmount = Math.floor(contract.amount / installments);
+    for (let index = released; index < installments; index++) {
+      rows.push({
+        contract,
+        dueAt:contract.unlockTime + index * (contract.intervalMs ?? 0),
+        amount:index === installments - 1 ? contract.amount - baseAmount * (installments - 1) : baseAmount,
+        direction:contract.beneficiary === wallet.address ? "incoming" : "outgoing",
+        kind:contract.contractType === "vesting" ? `INSTALLMENT ${index + 1}/${installments}` : "TIMELOCK RELEASE",
+        detail:contract.memo || `${contract.contractType} contract ${short(contract.address, 9)}`,
+        installment:index + 1,
+      });
+    }
+  }
+  return rows.sort((a, b) => a.dueAt - b.dueAt || a.contract.address.localeCompare(b.contract.address));
+}
+
+function renderContractIntelligence(contracts = currentContracts) {
+  if (!$("#contract-timeline")) return;
+  const active = contracts.filter((contract) => ["locked", "vesting"].includes(contract.status));
+  const outbound = active.filter((contract) => contract.creator === wallet.address).reduce((sum, contract) => sum + contract.amount - (contract.releasedAmount ?? 0), 0);
+  const inbound = active.filter((contract) => contract.beneficiary === wallet.address).reduce((sum, contract) => sum + contract.amount - (contract.releasedAmount ?? 0), 0);
+  const allRows = contractTimelineRows(contracts);
+  const now = Date.now();
+  const soonThreshold = now + 7 * 24 * 60 * 60_000;
+  const urgent = allRows.filter((row) => row.dueAt <= now + 60 * 60_000).length;
+  const hashlocks = active.filter((contract) => contract.contractType === "hashlock").length;
+  const capitalBase = Math.max(1, outbound + (currentAccount.availableBalance ?? 0));
+  const concentration = outbound / capitalBase;
+  const longHorizon = allRows.some((row) => row.dueAt > now + 180 * 24 * 60 * 60_000);
+  const risk = Math.min(100, urgent * 20 + hashlocks * 8 + (concentration > .75 ? 20 : concentration > .4 ? 10 : 0) + (longHorizon ? 10 : 0));
+  $("#contract-outbound").textContent = `${format(outbound)} EC`;
+  $("#contract-inbound").textContent = `${format(inbound)} EC`;
+  $("#contract-next-flow").textContent = allRows.length ? (allRows[0].dueAt <= now ? "READY NOW" : formatDuration(allRows[0].dueAt - now)) : "—";
+  $("#contract-risk").textContent = `${risk} / 100`;
+  $("#contract-intel-guidance").textContent = !active.length
+    ? "No active programmable payments. New contracts will appear here with a deterministic release forecast."
+    : urgent
+      ? `${urgent} cash-flow event${urgent === 1 ? " is" : "s are"} due within one hour. Verify hashlock secrets and beneficiary addresses now.`
+      : concentration > .75
+        ? "Most deployable value is committed to contracts. Keep enough liquid EC available for fees and unexpected operating needs."
+        : `${active.length} active contract${active.length === 1 ? "" : "s"} produce ${allRows.length} forecast cash-flow event${allRows.length === 1 ? "" : "s"}. No immediate deadline pressure is detected.`;
+  const filtered = allRows.filter((row) => contractFlowFilter === "all" || row.direction === contractFlowFilter || (contractFlowFilter === "soon" && row.dueAt <= soonThreshold)).slice(0, 40);
+  $("#contract-timeline").innerHTML = filtered.length ? filtered.map((row) => {
+    const due = row.dueAt <= now;
+    const counterparty = row.contract.contractType === "hashlock" && row.kind === "REFUND FALLBACK" ? row.contract.beneficiary : row.direction === "incoming" ? row.contract.creator : row.contract.beneficiary;
+    const contact = contacts.find((entry) => entry.address === counterparty);
+    const canClaim = row.contract.contractType === "hashlock" && row.contract.status === "locked" && row.contract.beneficiary === wallet.address;
+    return `<article class="contract-flow ${row.direction} ${due ? "due" : ""}">
+      <time>${due ? "READY NOW" : escapeHtml(formatDuration(row.dueAt - now))}<br>${escapeHtml(new Date(row.dueAt).toLocaleDateString())}</time>
+      <div><b>${escapeHtml(row.kind)} · ${escapeHtml(contact?.name || short(counterparty, 9))}</b><p>${escapeHtml(row.detail)} · ${escapeHtml(short(row.contract.address, 10))}</p></div>
+      <strong>${row.direction === "incoming" ? "+" : "−"}${escapeHtml(format(row.amount))} EC</strong>
+      ${canClaim ? `<button type="button" data-contract-flow-claim="${escapeHtml(row.contract.address)}">CLAIM</button>` : ""}
+    </article>`;
+  }).join("") : '<p class="empty">No contract cash flows match this filter.</p>';
 }
 
 function renderData(market,status,blocks) {
@@ -346,6 +490,80 @@ function renderData(market,status,blocks) {
   for (const svg of [$("#price-chart"),$("#load-chart")]) svg.querySelector(".chart-gridlines").innerHTML=[55,115,175,235].map((y)=>`<line x1="24" y1="${y}" x2="696" y2="${y}"></line>`).join("");
   $("#market-history").innerHTML=market.history.length?market.history.slice().reverse().map((entry)=>`<div class="market-row"><span>${usd(entry.priceMicroUsd/1_000_000,6)}</span><b>${escapeHtml(format(entry.amount))} EC / ${usd(entry.usdCents/100,2)}</b><code>${entry.kind === "order_trade" ? "ORDER TRADE" : `BLOCK #${entry.blockHeight}`}</code><time>${relativeTime(entry.timestamp)}</time></div>`).join(""):'<p class="empty">No market purchases yet.</p>';
   renderDataIntelligence(market, status, blocks, priceValues);
+}
+
+async function refreshPortfolio(market = marketData, status = currentStatus, force = false) {
+  if (!market || !status || !wallets.length || !$("#portfolio-list")) return;
+  if (!force && portfolioEntries.length && Date.now() - portfolioUpdatedAt < 10_000) {
+    portfolioEntries = portfolioEntries.map((entry) => entry.wallet.address === wallet.address ? { ...entry, account:currentAccount, available:true, error:null } : entry);
+    renderPortfolio(market, status);
+    return;
+  }
+  const results = await Promise.all(wallets.map(async (candidate) => {
+    try {
+      const account = candidate.address === wallet.address ? currentAccount : await api(`/accounts/${candidate.address}`);
+      return { wallet:candidate, account, available:true };
+    } catch (error) {
+      return { wallet:candidate, account:{ balance:0, availableBalance:0, marketPosition:0, marketLocked:0, pendingOutgoing:0, pendingIncoming:0, insights:{ transactionCount:0 } }, available:false, error:error.message };
+    }
+  }));
+  portfolioEntries = results;
+  portfolioUpdatedAt = Date.now();
+  renderPortfolio(market, status);
+}
+
+function renderPortfolio(market = marketData, status = currentStatus) {
+  if (!market || !status || !$("#portfolio-list")) return;
+  const colors = ["#c7f36b", "#ff9f6b", "#70c7b8", "#9d8cff", "#f0d264", "#e87b9e"];
+  const enriched = portfolioEntries.map((entry, index) => {
+    const marketPosition = Number(entry.account.marketPosition || 0);
+    const holdings = Math.max(0, Number(entry.account.balance || 0) + marketPosition);
+    const availableBalance = Math.max(0, Number(entry.account.availableBalance || 0));
+    return { ...entry, holdings, availableBalance, reserved:Math.max(0, holdings - availableBalance), color:colors[index % colors.length] };
+  }).sort((a, b) => b.holdings - a.holdings || a.wallet.name.localeCompare(b.wallet.name));
+  const total = enriched.reduce((sum, entry) => sum + entry.holdings, 0);
+  const available = enriched.reduce((sum, entry) => sum + entry.availableBalance, 0);
+  const reserved = enriched.reduce((sum, entry) => sum + entry.reserved, 0);
+  const largestShare = total ? enriched[0]?.holdings / total : 0;
+  const diversity = total ? 1 / enriched.reduce((sum, entry) => sum + (entry.holdings / total) ** 2, 0) : 0;
+  const pending = enriched.reduce((sum, entry) => sum + Number(entry.account.pendingOutgoing || 0) + Number(entry.account.pendingIncoming || 0), 0);
+  const failed = enriched.filter((entry) => !entry.available).length;
+  const treasury = enriched.find((entry) => entry.wallet.address === status.treasuryAddress);
+  const operating = enriched.filter((entry) => entry.wallet.address !== status.treasuryAddress);
+  const operatingTotal = operating.reduce((sum, entry) => sum + entry.holdings, 0);
+  const operatingLargest = operatingTotal ? Math.max(...operating.map((entry) => entry.holdings)) / operatingTotal : 0;
+  const health = failed ? "CHECK CONNECTION" : vaultState === "none" ? "PROTECT KEYS" : pending > 3 ? "QUEUE ACTIVE" : "HEALTHY";
+  const healthNote = failed
+    ? `${failed} wallet${failed === 1 ? "" : "s"} could not be read.`
+    : vaultState === "none"
+      ? "Enable the encrypted vault for stronger key protection."
+      : `${pending} pending movement${pending === 1 ? "" : "s"} across ${enriched.length} wallets.`;
+  $("#portfolio-total").textContent = `${format(total)} EC`;
+  $("#portfolio-usd").textContent = `${(total / SCALE * market.priceUsd).toLocaleString(undefined, { style:"currency", currency:"USD", maximumFractionDigits:2 })} at the internal quote`;
+  $("#portfolio-available").textContent = `${format(available)} EC`;
+  $("#portfolio-reserved").textContent = `${format(reserved)} EC reserved or committed`;
+  $("#portfolio-concentration").textContent = `${(largestShare * 100).toFixed(1)}%`;
+  $("#portfolio-diversity").textContent = `${diversity.toFixed(2)} effective wallets`;
+  $("#portfolio-health").textContent = health;
+  $("#portfolio-health-note").textContent = healthNote;
+  $("#portfolio-allocation-bar").innerHTML = enriched.filter((entry) => entry.holdings > 0).map((entry) => `<span class="portfolio-segment" title="${escapeHtml(entry.wallet.name)} ${(entry.holdings / total * 100).toFixed(2)}%" style="width:${entry.holdings / total * 100}%;background:${entry.color}"></span>`).join("");
+  const treasuryShare = total && treasury ? treasury.holdings / total : 0;
+  $("#portfolio-guidance").textContent = treasuryShare > .9
+    ? `Genesis treasury represents ${(treasuryShare * 100).toFixed(1)}% of local holdings, which is expected before broader distribution. ${operating.length > 1 ? `Outside treasury, the largest wallet holds ${(operatingLargest * 100).toFixed(1)}% of operating funds.` : "Create or fund another wallet to build an operating allocation."}`
+    : largestShare > .75
+      ? "Holdings are highly concentrated in one wallet. Separate operating funds from long-term reserves and keep both vault-protected."
+      : "Holdings are distributed across the local wallet set. Review pending and reserved balances before large transfers.";
+  $("#portfolio-list").innerHTML = enriched.length ? enriched.map((entry) => {
+    const share = total ? entry.holdings / total * 100 : 0;
+    const badges = [entry.wallet.address === status.treasuryAddress ? "GENESIS" : "LOCAL", entry.wallet.address === wallet.address ? "ACTIVE" : null, entry.available ? null : "OFFLINE"].filter(Boolean).join(" · ");
+    return `<article class="portfolio-row ${entry.wallet.address === wallet.address ? "active" : ""}">
+      <div><b><span class="portfolio-swatch" style="background:${entry.color}"></span>${escapeHtml(entry.wallet.name)}</b><p title="${escapeHtml(entry.wallet.address)}">${escapeHtml(short(entry.wallet.address, 12))} · ${escapeHtml(badges)}</p></div>
+      <div class="portfolio-cell"><span>HOLDINGS</span><strong>${escapeHtml(format(entry.holdings))} EC</strong></div>
+      <div class="portfolio-cell"><span>AVAILABLE</span><strong>${escapeHtml(format(entry.availableBalance))} EC</strong></div>
+      <div class="portfolio-cell"><span>ALLOCATION</span><strong>${share.toFixed(2)}%</strong></div>
+      <button type="button" data-portfolio-wallet="${escapeHtml(entry.wallet.address)}" ${entry.wallet.address === wallet.address ? "disabled" : ""}>${entry.wallet.address === wallet.address ? "ACTIVE" : "OPEN"}</button>
+    </article>`;
+  }).join("") : '<p class="empty">No local wallets available.</p>';
 }
 
 function renderOrderBook(market) {
@@ -526,6 +744,41 @@ function loadTransferTemplates() {
   transferTemplates = Array.isArray(transferTemplatesByWallet[wallet?.address]) ? transferTemplatesByWallet[wallet.address] : [];
 }
 
+function loadTransactionGuard() {
+  try {
+    guardPolicies = JSON.parse(localStorage.getItem(transactionGuardKey) || "{}") || {};
+    spendJournalByWallet = JSON.parse(localStorage.getItem(spendJournalKey) || "{}") || {};
+  } catch {
+    guardPolicies = {};
+    spendJournalByWallet = {};
+  }
+  const stored = guardPolicies[wallet?.address] || {};
+  guardPolicy = {
+    dailyLimit: Number.isSafeInteger(stored.dailyLimit) && stored.dailyLimit >= 0 ? stored.dailyLimit : 0,
+    reserve: Number.isSafeInteger(stored.reserve) && stored.reserve >= 0 ? stored.reserve : 5 * SCALE,
+    knownOnly: Boolean(stored.knownOnly),
+  };
+  spendJournal = Array.isArray(spendJournalByWallet[wallet?.address])
+    ? spendJournalByWallet[wallet.address].filter((entry) => entry && Number.isSafeInteger(entry.amount) && Number.isFinite(entry.timestamp)).slice(0, 200)
+    : [];
+}
+
+function loadSessionSecurity() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(sessionSecurityKey) || "{}") || {};
+    const timeoutMinutes = [0, 5, 15, 30, 60].includes(Number(stored.timeoutMinutes)) ? Number(stored.timeoutMinutes) : 15;
+    sessionSecurity = { timeoutMinutes, lockWhenHidden:stored.lockWhenHidden !== false };
+    recoveryAudit = JSON.parse(localStorage.getItem(recoveryAuditKey) || "{}") || {};
+  } catch {
+    sessionSecurity = { timeoutMinutes:15, lockWhenHidden:true };
+    recoveryAudit = {};
+  }
+}
+
+function saveSessionSecurity() {
+  localStorage.setItem(sessionSecurityKey, JSON.stringify(sessionSecurity));
+}
+
 function loadMarketAlerts() {
   try {
     marketAlerts = (JSON.parse(localStorage.getItem(marketAlertsKey) || "[]") || [])
@@ -563,6 +816,17 @@ function loadPaymentPlans() {
   paymentPlans = Array.isArray(paymentPlansByWallet[wallet?.address]) ? paymentPlansByWallet[wallet.address] : [];
 }
 
+function loadPaymentRequests() {
+  try {
+    paymentRequestsByWallet = JSON.parse(localStorage.getItem(paymentRequestsKey) || "{}") || {};
+  } catch {
+    paymentRequestsByWallet = {};
+  }
+  paymentRequests = Array.isArray(paymentRequestsByWallet[wallet?.address])
+    ? paymentRequestsByWallet[wallet.address].filter((request) => request && typeof request.label === "string" && typeof request.address === "string" && /^ec1[0-9a-f]{38}$/.test(request.address))
+    : [];
+}
+
 function saveWatchlist() {
   localStorage.setItem(watchlistKey, JSON.stringify(watchlist));
 }
@@ -593,6 +857,18 @@ function saveTransferTemplates() {
   localStorage.setItem(transferTemplatesKey, JSON.stringify(transferTemplatesByWallet));
 }
 
+function saveTransactionGuard() {
+  if (!wallet?.address) return;
+  guardPolicies[wallet.address] = guardPolicy;
+  localStorage.setItem(transactionGuardKey, JSON.stringify(guardPolicies));
+}
+
+function saveSpendJournal() {
+  if (!wallet?.address) return;
+  spendJournalByWallet[wallet.address] = spendJournal.slice(0, 200);
+  localStorage.setItem(spendJournalKey, JSON.stringify(spendJournalByWallet));
+}
+
 function saveMarketAlerts() {
   localStorage.setItem(marketAlertsKey, JSON.stringify(marketAlerts.slice(0, 12)));
 }
@@ -607,6 +883,12 @@ function savePaymentPlans() {
   if (!wallet?.address) return;
   paymentPlansByWallet[wallet.address] = paymentPlans.slice(0, 24);
   localStorage.setItem(paymentPlansKey, JSON.stringify(paymentPlansByWallet));
+}
+
+function savePaymentRequests() {
+  if (!wallet?.address) return;
+  paymentRequestsByWallet[wallet.address] = paymentRequests.slice(0, 24);
+  localStorage.setItem(paymentRequestsKey, JSON.stringify(paymentRequestsByWallet));
 }
 
 function recordWalletHistory(account, market, status) {
@@ -682,6 +964,218 @@ function cadenceToMs(cadence) {
 
 function formatPlanTime(timestamp) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : "—";
+}
+
+function createPaymentRequest() {
+  const label = $("#request-label").value.trim();
+  const amountValue = $("#request-amount").value.trim();
+  const memo = $("#request-memo").value.trim();
+  const expiresHours = Number($("#request-expiry").value);
+  const amount = amountValue ? Math.round(Number(amountValue) * SCALE) : 0;
+  if (!label) throw new Error("Request label cannot be blank");
+  if (amountValue && (!Number.isSafeInteger(amount) || amount < 0)) throw new Error("Enter a valid request amount");
+  if (!Number.isFinite(expiresHours) || expiresHours < 0) throw new Error("Enter a valid expiry window");
+  const request = {
+    id: crypto.randomUUID(),
+    label,
+    address: wallet.address,
+    amount,
+    memo,
+    createdAt: Date.now(),
+    expiresAt: expiresHours ? Date.now() + expiresHours * 60 * 60_000 : null,
+    fulfilledAt: null,
+    archivedAt: null,
+  };
+  paymentRequests = [request, ...paymentRequests];
+  savePaymentRequests();
+  renderPaymentRequests();
+  return request;
+}
+
+function requestState(request, now = Date.now()) {
+  if (request.archivedAt) return "archived";
+  if (request.fulfilledAt) return "fulfilled";
+  if (request.expiresAt && request.expiresAt <= now) return "expired";
+  return "open";
+}
+
+function requestUriFor(request) {
+  return paymentRequestUri(request.address, request.amount ? (request.amount / SCALE).toFixed(6) : "", request.memo || "");
+}
+
+function fillPaymentRequest(request) {
+  $("#recipient").value = request.address;
+  if (request.amount) $("#amount").value = (request.amount / SCALE).toFixed(6);
+  $("#memo").value = request.memo || request.label || "";
+  updateComposer();
+  toast("Payment request loaded into the send form");
+}
+
+function renderPaymentRequests() {
+  const summary = $("#request-summary");
+  const list = $("#request-list");
+  if (!summary || !list) return;
+  const now = Date.now();
+  const active = paymentRequests.filter((request) => requestState(request, now) === "open");
+  const completed = paymentRequests.filter((request) => requestState(request, now) === "fulfilled").length;
+  const expired = paymentRequests.filter((request) => requestState(request, now) === "expired").length;
+  const nextDue = active.filter((request) => request.expiresAt).sort((a, b) => a.expiresAt - b.expiresAt)[0];
+  summary.textContent = paymentRequests.length
+    ? `${active.length} active request${active.length === 1 ? "" : "s"} · ${completed} fulfilled · ${expired} expired${nextDue ? ` · next expiry ${formatDuration(Math.max(0, nextDue.expiresAt - now))}` : ""}`
+    : "Create an invoice-style request that can be copied, shared, and filled back into the send form.";
+  list.innerHTML = paymentRequests.length ? paymentRequests.map((request) => {
+    const state = requestState(request, now);
+    const expiresIn = request.expiresAt ? Math.max(0, request.expiresAt - now) : null;
+    const label = request.label || "Untitled request";
+    const amount = request.amount ? `${format(request.amount)} EC` : "OPEN AMOUNT";
+    const uri = requestUriFor(request);
+    return `<article class="request-item ${state}">
+      <div>
+        <b>${escapeHtml(label)}</b>
+        <p>${escapeHtml(amount)} · ${escapeHtml(request.memo || "No memo")} · ${escapeHtml(state.toUpperCase())}</p>
+        <div class="request-meta">
+          <span>CREATED ${escapeHtml(relativeTime(request.createdAt))}</span>
+          <span>${request.expiresAt ? `EXPIRES ${escapeHtml(expiresIn <= 0 ? "NOW" : formatDuration(expiresIn))}` : "NO EXPIRY"}</span>
+        </div>
+      </div>
+      <div class="request-actions">
+        <button type="button" data-request-fill="${escapeHtml(request.id)}">FILL</button>
+        <button type="button" data-request-copy="${escapeHtml(uri)}">COPY</button>
+        <button type="button" data-request-share="${escapeHtml(uri)}">SHARE</button>
+        <button type="button" data-request-toggle="${escapeHtml(request.id)}">${state === "fulfilled" ? "REOPEN" : "MARK PAID"}</button>
+        <button type="button" data-request-archive="${escapeHtml(request.id)}">${state === "archived" ? "RESTORE" : "ARCHIVE"}</button>
+      </div>
+    </article>`;
+  }).join("") : '<p class="empty">No payment requests yet.</p>';
+}
+
+function activityKindLabel(tx) {
+  if (tx.type === "market_buy") return "Treasury purchase";
+  if (tx.type === "faucet") return "Faucet grant";
+  if (tx.type === "contract_deploy") return `${tx.contractType || "contract"} deployment`;
+  if (tx.type === "contract_execute") return "Contract release";
+  if (tx.type === "contract_claim") return "Hashlock claim";
+  if (tx.type === "contract_refund") return "Hashlock refund";
+  return "Transfer";
+}
+
+function activityDirection(tx) {
+  if (tx.from === wallet.address && tx.to === wallet.address) return "self";
+  if (tx.to === wallet.address) return "in";
+  if (tx.from === wallet.address) return "out";
+  return "other";
+}
+
+function summarizeWalletActivity(entries = []) {
+  const inflow = entries.filter((tx) => tx.to === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const outflow = entries.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const fees = entries.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.fee || 0), 0);
+  const counterparties = new Set(entries.flatMap((tx) => [tx.from, tx.to]).filter((address) => address && address !== wallet.address));
+  const ordered = [...entries].sort((a, b) => a.settledAt - b.settledAt);
+  const firstSeen = ordered[0]?.settledAt ?? null;
+  const lastSeen = ordered.at(-1)?.settledAt ?? null;
+  const outgoing = entries.filter((tx) => tx.from === wallet.address && Number.isSafeInteger(tx.amount));
+  const averageSend = outgoing.length ? outgoing.reduce((sum, tx) => sum + tx.amount, 0) / outgoing.length : 0;
+  const anomalies = [];
+  const largest = outgoing.sort((a, b) => b.amount - a.amount)[0];
+  if (largest && averageSend > 0 && largest.amount >= averageSend * 3) {
+    anomalies.push({ tone:"warning", text:`Largest outgoing transfer is ${(largest.amount / SCALE).toFixed(6)} EC, about ${(largest.amount / averageSend).toFixed(1)}x your average send.` });
+  }
+  if (outflow > 0 && inflow === 0) {
+    anomalies.push({ tone:"warning", text:"This wallet has only spent funds so far. Consider rechecking the funding path and backups." });
+  }
+  if (entries.length >= 6 && lastSeen && firstSeen) {
+    const spanDays = Math.max(1, (lastSeen - firstSeen) / (24 * 60 * 60_000));
+    const cadence = entries.length / spanDays;
+    if (cadence > 12) anomalies.push({ tone:"warning", text:"Transaction cadence is high. Review whether automation or a compromised key is expected here." });
+  }
+  return {
+    inflow,
+    outflow,
+    fees,
+    net: inflow - outflow - fees,
+    counterparties: counterparties.size,
+    txCount: entries.length,
+    firstSeen,
+    lastSeen,
+    anomalies,
+  };
+}
+
+function renderWalletActivity(activity = walletActivity, account = currentAccount) {
+  const summaryNode = $("#activity-summary");
+  const list = $("#activity-list");
+  const note = $("#activity-note");
+  if (!summaryNode || !list || !note) return;
+  const summary = walletActivitySummary = summarizeWalletActivity(activity);
+  $("#activity-inflow").textContent = `${format(summary.inflow)} EC`;
+  $("#activity-outflow").textContent = `${format(summary.outflow)} EC`;
+  $("#activity-fees").textContent = `${format(summary.fees)} EC`;
+  $("#activity-net").textContent = `${summary.net >= 0 ? "+" : ""}${format(Math.abs(summary.net))} EC`;
+  $("#activity-count").textContent = `${summary.txCount} TX`;
+  $("#activity-counterparties").textContent = `${summary.counterparties} peers`;
+  $("#activity-window").textContent = summary.firstSeen && summary.lastSeen ? `${relativeTime(summary.firstSeen)} → ${relativeTime(summary.lastSeen)}` : "No history yet";
+  const newest = activity[0];
+  const oldest = activity.at(-1);
+  const stateLabel = newest ? `${activityKindLabel(newest)} · ${relativeTime(newest.settledAt)}` : "No confirmed activity yet";
+  summaryNode.textContent = `${summary.txCount} confirmed event${summary.txCount === 1 ? "" : "s"} · ${summary.counterparties} ${summary.counterparties === 1 ? "counterparty" : "counterparties"} · ${summary.net >= 0 ? "net positive" : "net negative"}`;
+  note.textContent = summary.anomalies.length ? summary.anomalies[0].text : newest ? `Latest activity: ${stateLabel}` : "No on-chain activity has settled for this wallet yet.";
+  list.innerHTML = activity.length ? activity.map((tx) => {
+    const direction = activityDirection(tx);
+    const tone = direction === "in" ? "good" : direction === "out" ? "warning" : "neutral";
+    const counterparty = direction === "in" ? tx.from : tx.to;
+    const counterpartyLabel = counterparty && counterparty !== wallet.address ? (contacts.find((entry) => entry.address === counterparty)?.name ?? short(counterparty, 10)) : wallet.name;
+    const value = tx.amount != null ? `${direction === "out" ? "−" : "+"}${format(tx.amount)} EC` : "—";
+    const fee = tx.fee != null ? ` · fee ${format(tx.fee)} EC` : "";
+    return `<article class="activity-item ${tone}">
+      <div>
+        <b>${escapeHtml(activityKindLabel(tx))}</b>
+        <p>${escapeHtml(counterpartyLabel)} · block #${tx.blockHeight ?? "?"}${tx.memo ? ` · ${escapeHtml(tx.memo)}` : ""}</p>
+        <div class="activity-meta">
+          <span>${escapeHtml(direction.toUpperCase())}</span>
+          <span>${escapeHtml(new Date(tx.settledAt).toLocaleString())}</span>
+          <span>${escapeHtml(tx.id ? short(tx.id, 12) : "n/a")}</span>
+        </div>
+      </div>
+      <strong>${escapeHtml(value)}${escapeHtml(fee)}</strong>
+    </article>`;
+  }).join("") : '<p class="empty">No confirmed activity yet.</p>';
+  if (summary.anomalies.length) {
+    summaryNode.classList.add("warning");
+    note.title = summary.anomalies.map((item) => item.text).join(" ");
+  } else {
+    summaryNode.classList.remove("warning");
+    note.title = newest ? `Latest activity timestamp: ${new Date(newest.settledAt).toISOString()}` : "";
+  }
+  return summary;
+}
+
+function exportWalletActivity(formatType = "csv") {
+  const entries = walletActivity;
+  if (!entries.length) throw new Error("No activity is available to export yet");
+  const rows = entries.map((tx) => ({
+    settledAt: new Date(tx.settledAt).toISOString(),
+    blockHeight: tx.blockHeight,
+    type: tx.type,
+    direction: activityDirection(tx),
+    from: tx.from ?? "",
+    to: tx.to ?? "",
+    amountEc: tx.amount != null ? (tx.amount / SCALE).toFixed(6) : "",
+    feeEc: tx.fee != null ? (tx.fee / SCALE).toFixed(6) : "",
+    memo: tx.memo ?? "",
+    contractAddress: tx.contractAddress ?? "",
+    id: tx.id ?? "",
+  }));
+  const suffix = formatType === "json" ? "json" : "csv";
+  const blob = formatType === "json"
+    ? new Blob([JSON.stringify({ wallet: wallet.address, exportedAt: new Date().toISOString(), summary: walletActivitySummary, entries: rows }, null, 2)], { type:"application/json;charset=utf-8" })
+    : new Blob([[
+      ["settled_at","block_height","type","direction","from","to","amount_ec","fee_ec","memo","contract_address","id"],
+      ...rows.map((row) => [row.settledAt,row.blockHeight,row.type,row.direction,row.from,row.to,row.amountEc,row.feeEc,row.memo,row.contractAddress,row.id]),
+    ].map((line) => line.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\n")], { type:"text/csv;charset=utf-8" });
+  const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:`ecoin-activity-${wallet.address.slice(0, 10)}.${suffix}` });
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function fillPlanDraft(plan) {
@@ -794,19 +1288,215 @@ function renderReceivePanel() {
   code.innerHTML = `<rect width="100%" height="100%" fill="${white}"></rect>${matrix.map((row, y) => row.map((on, x) => on ? `<rect x="${margin + x * cell}" y="${margin + y * cell}" width="${cell}" height="${cell}" rx="1" fill="${dark}"></rect>` : "").join("")).join("")}`;
 }
 
+function spentToday() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  return spendJournal.reduce((sum, entry) => entry.timestamp >= start.getTime() ? sum + entry.amount + (entry.fee || 0) : sum, 0);
+}
+
+function evaluateTransactionGuard(tx, profile = null) {
+  const validAmount = Number.isSafeInteger(tx?.amount) && tx.amount > 0;
+  const isKnown = contacts.some((contact) => contact.address === tx?.to);
+  const today = spentToday();
+  const total = validAmount ? tx.amount + (tx.fee || 0) : 0;
+  const after = (currentAccount.availableBalance ?? 0) - total;
+  const signals = [];
+  let risk = 0;
+  let blocked = false;
+
+  if (!validAmount || !/^ec1[0-9a-f]{38}$/.test(tx?.to || "")) {
+    return { risk:0, blocked:false, today, room:guardPolicy.dailyLimit ? Math.max(0, guardPolicy.dailyLimit - today) : null, signals:[{ tone:"", text:"Fill a valid recipient and amount for a complete policy check." }] };
+  }
+  if (!isKnown) {
+    risk += 25;
+    signals.push({ tone:guardPolicy.knownOnly ? "warning" : "", text:guardPolicy.knownOnly ? "Blocked: the recipient is not a saved contact." : "Recipient is not in your local address book." });
+    blocked ||= guardPolicy.knownOnly;
+  } else {
+    signals.push({ tone:"", text:"Saved contact: the local identity check passed." });
+  }
+  if (profile && !profile.insights?.transactionCount) {
+    risk += 20;
+    signals.push({ tone:"warning", text:"The destination has no committed ledger history." });
+  }
+  if (total > (currentAccount.availableBalance ?? 0) / 2) {
+    risk += 30;
+    signals.push({ tone:"warning", text:"This transfer spends more than half of the available balance." });
+  }
+  if (after < guardPolicy.reserve) {
+    risk += 25;
+    signals.push({ tone:"warning", text:`The balance would fall below your ${format(guardPolicy.reserve)} EC reserve.` });
+  }
+  if (guardPolicy.dailyLimit && today + total > guardPolicy.dailyLimit) {
+    risk += 35;
+    blocked = true;
+    signals.push({ tone:"warning", text:`Blocked: this send exceeds the ${format(guardPolicy.dailyLimit)} EC daily limit.` });
+  }
+  if (tx.fee / tx.amount > .05) {
+    risk += 10;
+    signals.push({ tone:"warning", text:"The network fee is more than 5% of the transfer." });
+  }
+  if (!signals.some((signal) => signal.tone === "warning")) signals.push({ tone:"", text:"No elevated local policy signals were found." });
+  return { risk:Math.min(100, risk), blocked, today, room:guardPolicy.dailyLimit ? Math.max(0, guardPolicy.dailyLimit - today) : null, signals };
+}
+
+function renderTransactionGuard(profile = null) {
+  if (!$("#guard-risk")) return;
+  const amount = Math.round(Number($("#amount").value) * SCALE);
+  const result = evaluateTransactionGuard({ to:$("#recipient").value.trim(), amount, fee:activeFee }, profile);
+  $("#guard-risk").textContent = `${result.risk} / 100`;
+  $("#guard-spent").textContent = `${format(result.today)} EC`;
+  $("#guard-room").textContent = result.room == null ? "NO LIMIT" : `${format(result.room)} EC`;
+  $("#guard-state").textContent = result.blocked ? "POLICY BLOCK" : result.risk >= 50 ? "HIGH ATTENTION" : "MONITORING";
+  $("#guard-guidance").textContent = result.blocked
+    ? "This draft cannot be signed under the saved policy. Adjust the transfer or update the policy intentionally."
+    : result.risk >= 50
+      ? "Review every signal carefully before allowing the wallet to use your signing key."
+      : "The guard evaluates each draft before your key is used.";
+  $("#guard-signals").innerHTML = result.signals.map((signal) => `<div class="signal ${signal.tone}">${escapeHtml(signal.text)}</div>`).join("");
+  $(".guard-panel").classList.toggle("blocked", result.blocked);
+}
+
+function renderTransactionGuardSettings() {
+  if (!$("#guard-daily-limit")) return;
+  $("#guard-daily-limit").value = guardPolicy.dailyLimit ? (guardPolicy.dailyLimit / SCALE).toFixed(6) : "0";
+  $("#guard-reserve").value = (guardPolicy.reserve / SCALE).toFixed(6);
+  $("#guard-known-only").checked = guardPolicy.knownOnly;
+  renderTransactionGuard();
+}
+
+function noteSensitiveActivity() {
+  if (vaultState !== "unlocked") return;
+  lastSensitiveActivity = Date.now();
+}
+
+function renderSessionSecurity() {
+  if (!$("#session-security-state")) return;
+  const timeoutMs = sessionSecurity.timeoutMinutes * 60_000;
+  const remaining = timeoutMs ? Math.max(0, timeoutMs - (Date.now() - lastSensitiveActivity)) : null;
+  const backupAt = Number(recoveryAudit[wallet?.address] || 0);
+  const backupAge = backupAt ? Date.now() - backupAt : null;
+  const backupStale = backupAge == null || backupAge > 30 * 24 * 60 * 60_000;
+  $("#session-timeout").value = String(sessionSecurity.timeoutMinutes);
+  $("#lock-when-hidden").checked = sessionSecurity.lockWhenHidden;
+  $("#lock-session-now").disabled = vaultState !== "unlocked";
+  $("#recovery-age").textContent = backupAge == null ? "NO ENCRYPTED BACKUP" : backupAge < 60_000 ? "BACKED UP NOW" : `${relativeTime(backupAt).toUpperCase()}`;
+  if (vaultState === "none") {
+    $("#session-security-state").textContent = "VAULT NOT ENABLED";
+    $("#session-countdown").textContent = "NOT PROTECTED";
+    $("#session-security-guidance").textContent = "Enable the encrypted vault to use automatic session locking.";
+  } else if (vaultState === "locked") {
+    $("#session-security-state").textContent = "KEYS LOCKED";
+    $("#session-countdown").textContent = "LOCKED";
+    $("#session-security-guidance").textContent = backupStale ? "Signing keys are locked. Create a fresh encrypted recovery bundle after unlocking." : "Signing keys are locked and a recent encrypted recovery bundle is recorded locally.";
+  } else {
+    $("#session-security-state").textContent = "SIGNING ENABLED";
+    $("#session-countdown").textContent = remaining == null ? "AUTO-LOCK OFF" : `${String(Math.floor(remaining / 60_000)).padStart(2, "0")}:${String(Math.floor((remaining % 60_000) / 1000)).padStart(2, "0")} TO LOCK`;
+    $("#session-security-guidance").textContent = backupStale
+      ? "The signing session is open, but no recent encrypted recovery bundle is recorded. Back up before moving significant value."
+      : sessionSecurity.timeoutMinutes
+        ? `The session locks ${sessionSecurity.lockWhenHidden ? "when hidden or " : ""}after ${sessionSecurity.timeoutMinutes} minutes of inactivity.`
+        : sessionSecurity.lockWhenHidden ? "Inactivity locking is off, but the vault still locks whenever the app is hidden." : "Automatic locking is disabled; use Lock Now after signing.";
+  }
+  $(".session-security").classList.toggle("warn", vaultState === "none" || backupStale);
+}
+
+function checkSessionSecurity() {
+  if (vaultState !== "unlocked" || !sessionSecurity.timeoutMinutes) return renderSessionSecurity();
+  if (Date.now() - lastSensitiveActivity >= sessionSecurity.timeoutMinutes * 60_000) {
+    lockVault();
+    toast("Vault auto-locked after inactivity");
+  }
+  renderSessionSecurity();
+}
+
+function analyzeBatchPayments() {
+  const lines = $("#batch-input")?.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) ?? [];
+  const entries = [];
+  const errors = [];
+  if (lines.length > 32) errors.push("A batch can contain at most 32 transfers.");
+  lines.slice(0, 32).forEach((line, index) => {
+    const parts = line.split(",");
+    const recipientInput = (parts.shift() || "").trim();
+    const amountInput = (parts.shift() || "").trim();
+    const memo = parts.join(",").trim();
+    const contact = contacts.find((item) => item.name.toLowerCase() === recipientInput.toLowerCase());
+    const to = contact?.address || recipientInput;
+    const amount = Math.round(Number(amountInput) * SCALE);
+    if (!/^ec1[0-9a-f]{38}$/.test(to)) errors.push(`Row ${index + 1}: use a valid address or exact contact name.`);
+    else if (to === wallet?.address) errors.push(`Row ${index + 1}: the active wallet cannot pay itself.`);
+    if (!Number.isSafeInteger(amount) || amount <= 0) errors.push(`Row ${index + 1}: enter a positive amount.`);
+    if (memo.length > 96) errors.push(`Row ${index + 1}: memo exceeds 96 characters.`);
+    if (/^ec1[0-9a-f]{38}$/.test(to) && to !== wallet?.address && Number.isSafeInteger(amount) && amount > 0 && memo.length <= 96) {
+      entries.push({ to, amount, memo, contact:contact?.name || contacts.find((item) => item.address === to)?.name || "" });
+    }
+  });
+  const total = entries.reduce((sum, entry) => sum + entry.amount, 0);
+  const fees = entries.length * activeFee;
+  const cost = total + fees;
+  const after = (currentAccount.availableBalance ?? 0) - cost;
+  const unknown = entries.filter((entry) => !contacts.some((contact) => contact.address === entry.to)).length;
+  const duplicateRecipients = entries.length - new Set(entries.map((entry) => entry.to)).size;
+  const policyReasons = [];
+  if (entries.length > 0 && entries.length < 2) policyReasons.push("Add at least two valid payments.");
+  if (vaultState === "locked") policyReasons.push("Unlock the vault before batch signing.");
+  if (cost > (currentAccount.availableBalance ?? 0)) policyReasons.push("Batch total plus fees exceeds the available balance.");
+  if (entries.length && after < guardPolicy.reserve) policyReasons.push(`Batch would cross the ${format(guardPolicy.reserve)} EC minimum reserve.`);
+  if (guardPolicy.dailyLimit && spentToday() + cost > guardPolicy.dailyLimit) policyReasons.push(`Batch exceeds the ${format(guardPolicy.dailyLimit)} EC daily send limit.`);
+  if (guardPolicy.knownOnly && unknown) policyReasons.push(`${unknown} recipient${unknown === 1 ? " is" : "s are"} not saved contacts.`);
+  if ((currentAccount.pendingOutgoing ?? 0) + entries.length > 256) policyReasons.push("Sender pending-transaction limit would be exceeded.");
+  const risk = Math.min(100,
+    unknown * 10
+    + (cost > (currentAccount.availableBalance ?? 0) / 2 ? 30 : 0)
+    + (after < guardPolicy.reserve ? 25 : 0)
+    + (duplicateRecipients ? 15 : 0)
+    + (entries.length > 16 ? 10 : 0)
+  );
+  return { lines, entries, errors, total, fees, cost, after, unknown, duplicateRecipients, policyReasons, risk, blocked:Boolean(errors.length || policyReasons.length || entries.length < 2) };
+}
+
+function renderBatchComposer() {
+  if (!$("#batch-input")) return;
+  const analysis = analyzeBatchPayments();
+  batchDraft = analysis.entries;
+  $("#batch-count").textContent = String(analysis.entries.length);
+  $("#batch-total").textContent = `${format(analysis.total)} EC`;
+  $("#batch-fees").textContent = `${format(analysis.fees)} EC`;
+  $("#batch-after").textContent = analysis.entries.length ? `${format(Math.max(0, analysis.after))} EC` : "—";
+  const messages = [...analysis.errors, ...analysis.policyReasons];
+  $("#batch-status").textContent = messages[0] || `${analysis.entries.length} payments ready · risk ${analysis.risk}/100 · ${analysis.unknown} unsaved recipients`;
+  $("#batch-status").className = `search-summary${analysis.blocked ? " warning" : ""}`;
+  $("#submit-batch").disabled = analysis.blocked;
+  $(".batch-panel").classList.toggle("blocked", analysis.blocked && analysis.entries.length > 0);
+  $("#batch-preview").innerHTML = analysis.entries.length ? analysis.entries.map((entry, index) => `<article class="batch-row">
+    <span>${index + 1}</span>
+    <div><b>${escapeHtml(entry.contact || short(entry.to, 11))}</b><p title="${escapeHtml(entry.to)}">${escapeHtml(short(entry.to, 13))}${entry.memo ? ` · ${escapeHtml(entry.memo)}` : ""}</p></div>
+    <strong>${escapeHtml(format(entry.amount))} EC</strong>
+  </article>`).join("") : '<p class="empty">The validated batch will appear here.</p>';
+}
+
 function recordRecentTransfer(tx) {
-  if (!tx || tx.from !== wallet.address || tx.type !== "transfer") return;
-  const entry = {
-    to: tx.to,
-    amount: tx.amount,
-    memo: tx.memo ?? "",
-    fee: tx.fee ?? activeFee,
-    tier: $("#fee-tier")?.value ?? "standard",
-    timestamp: Date.now(),
-  };
-  recentTransfers = [entry, ...recentTransfers.filter((item) => !(item.to === entry.to && item.amount === entry.amount && item.memo === entry.memo))].slice(0, 8);
+  recordRecentTransfers([tx]);
+}
+
+function recordRecentTransfers(transactions) {
+  const entries = transactions.filter((tx) => tx && tx.from === wallet.address).map((tx) => ({
+    to:tx.to,
+    amount:tx.amount,
+    memo:tx.memo ?? "",
+    fee:tx.fee ?? activeFee,
+    tier:$("#fee-tier")?.value ?? "standard",
+    timestamp:Date.now(),
+  }));
+  if (!entries.length) return;
+  for (const entry of entries.slice().reverse()) {
+    recentTransfers = [entry, ...recentTransfers.filter((item) => !(item.to === entry.to && item.amount === entry.amount && item.memo === entry.memo))].slice(0, 8);
+    spendJournal = [{ amount:entry.amount, fee:entry.fee, to:entry.to, timestamp:entry.timestamp }, ...spendJournal].slice(0, 200);
+  }
   saveRecentTransfers();
+  saveSpendJournal();
   renderRecentTransfers();
+  renderTransactionGuard();
+  renderBatchComposer();
 }
 
 function fillTransferDraft(entry) {
@@ -1248,14 +1938,57 @@ $("#share-request").addEventListener("click", async () => {
   await navigator.clipboard.writeText(uri);
   toast("Share not available, request copied");
 });
+$("#create-request").addEventListener("click", () => {
+  try {
+    const request = createPaymentRequest();
+    $("#request-label").value = "";
+    $("#request-amount").value = "";
+    $("#request-memo").value = "";
+    $("#request-expiry").value = "72";
+    toast(`Request created: ${request.label}`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
 $("#vault-action").addEventListener("click", () => {
   if (vaultState === "none") return openVaultDialog("create");
   if (vaultState === "locked") return openVaultDialog("unlock");
   lockVault();
   toast("Vault locked");
 });
+$("#session-timeout").addEventListener("change", (event) => {
+  sessionSecurity.timeoutMinutes = Number(event.target.value);
+  lastSensitiveActivity = Date.now();
+  saveSessionSecurity(); renderSessionSecurity(); toast("Auto-lock policy updated");
+});
+$("#lock-when-hidden").addEventListener("change", (event) => {
+  sessionSecurity.lockWhenHidden = event.target.checked;
+  saveSessionSecurity(); renderSessionSecurity(); toast(event.target.checked ? "Hidden-app locking enabled" : "Hidden-app locking disabled");
+});
+$("#lock-session-now").addEventListener("click", () => {
+  if (vaultState !== "unlocked") return;
+  lockVault(); toast("Signing session locked");
+});
+for (const activityEvent of ["pointerdown", "keydown"]) document.addEventListener(activityEvent, noteSensitiveActivity, { passive:true });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && sessionSecurity.lockWhenHidden && vaultState === "unlocked") {
+    lockVault(); toast("Vault locked when the app was hidden");
+  }
+});
+async function activateWallet(address) {
+  wallet=wallets.find((candidate)=>candidate.address===address)??wallet;
+  await saveWallets();
+  loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard();
+  showWallet();
+  $("#send-form").reset();
+  $("#batch-input").value=""; batchDraft=[];
+  renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings();
+  portfolioUpdatedAt = 0;
+  await refresh();
+}
+
 $("#wallet-picker").addEventListener("change",async(event)=>{
-  wallet=wallets.find((candidate)=>candidate.address===event.target.value)??wallet; await saveWallets(); showWallet(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); $("#send-form").reset(); await refresh(); toast(`Switched to ${wallet.name}`);
+  await activateWallet(event.target.value); toast(`Switched to ${wallet.name}`);
 });
 $("#open-wallet-manager").addEventListener("click",()=>{$("#wallet-name").value="";renderWallets();$("#wallet-overlay").hidden=false;$("#wallet-name").focus();});
 $("#close-wallet-manager").addEventListener("click",closeWalletManager);
@@ -1264,7 +1997,7 @@ $("#wallet-form").addEventListener("submit",async(event)=>{
   if (!name) return toast("Wallet name cannot be blank",true);
   if (vaultState === "locked") return toast("Unlock the vault before creating another wallet", true);
   setBusy(button,true);
-  try { wallet=await createWallet(name); wallets.push(wallet); await saveWallets(); renderWallets(); showWallet(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); closeWalletManager(); await refresh(); toast(`${name} created locally`); }
+  try { wallet=await createWallet(name); wallets.push(wallet); portfolioUpdatedAt=0; await saveWallets(); renderWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); showWallet(); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); closeWalletManager(); await refresh(); toast(`${name} created locally`); }
   catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
 $("#close-vault").addEventListener("click", closeVaultDialog);
@@ -1281,6 +2014,7 @@ $("#vault-form").addEventListener("submit", async (event) => {
       vaultEnvelope = await encryptWalletVault(wallets, password);
       vaultPassword = password;
       vaultState = "unlocked";
+      lastSensitiveActivity = Date.now();
       localStorage.setItem(walletVaultKey, JSON.stringify(vaultEnvelope));
       localStorage.removeItem(walletsKey);
       closeVaultDialog();
@@ -1293,8 +2027,10 @@ $("#vault-form").addEventListener("submit", async (event) => {
     if (!vaultEnvelope) throw new Error("No encrypted vault is available");
     const decrypted = await decryptWalletVault(vaultEnvelope, password);
     wallets = decrypted;
+    portfolioUpdatedAt = 0;
     vaultPassword = password;
     vaultState = "unlocked";
+    lastSensitiveActivity = Date.now();
     await ensureTreasuryWallet();
     await saveWallets();
     renderWallets();
@@ -1347,6 +2083,37 @@ async function updateBuyQuote() {
   $("#buy-price").textContent=quote.priceUsd.toLocaleString(undefined,{style:"currency",currency:"USD",minimumFractionDigits:6,maximumFractionDigits:6}); $("#buy-receive").textContent=`${format(quote.amount)} EC`;
 }
 $("#refresh-data").addEventListener("click",()=>refresh().catch((error)=>toast(error.message,true)));
+$("#export-activity-csv").addEventListener("click", () => {
+  try {
+    exportWalletActivity("csv");
+    toast("Activity statement exported as CSV");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#export-activity-json").addEventListener("click", () => {
+  try {
+    exportWalletActivity("json");
+    toast("Activity statement exported as JSON");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#refresh-portfolio").addEventListener("click", async (event) => {
+  const button = event.currentTarget; setBusy(button, true);
+  try { portfolioUpdatedAt = 0; await refreshPortfolio(marketData, currentStatus, true); toast("Portfolio refreshed"); }
+  catch (error) { toast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+$("#portfolio-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-portfolio-wallet]");
+  if (!button || button.disabled) return;
+  try {
+    await activateWallet(button.dataset.portfolioWallet);
+    document.querySelector('[data-view="wallet"]').click();
+    toast(`Opened ${wallet.name}`);
+  } catch (error) { toast(error.message, true); }
+});
 $("#watchlist-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("#watchlist-address");
@@ -1392,6 +2159,67 @@ $("#transfer-list").addEventListener("click", (event) => {
     memo: button.dataset.transferMemo || "",
     tier: button.dataset.transferTier || "standard",
   });
+});
+$("#request-list").addEventListener("click", async (event) => {
+  const fillButton = event.target.closest("[data-request-fill]");
+  const copyButton = event.target.closest("[data-request-copy]");
+  const shareButton = event.target.closest("[data-request-share]");
+  const toggleButton = event.target.closest("[data-request-toggle]");
+  const archiveButton = event.target.closest("[data-request-archive]");
+  const request = paymentRequests.find((item) => item.id === (fillButton?.dataset.requestFill || copyButton?.dataset.requestCopy || shareButton?.dataset.requestShare || toggleButton?.dataset.requestToggle || archiveButton?.dataset.requestArchive));
+  if (!request) return;
+  if (fillButton) {
+    fillPaymentRequest(request);
+    return;
+  }
+  if (copyButton) {
+    await navigator.clipboard.writeText(copyButton.dataset.requestCopy);
+    toast("Payment request copied");
+    return;
+  }
+  if (shareButton) {
+    const uri = shareButton.dataset.requestShare;
+    const text = `Send E-Coin to ${request.label}: ${uri}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "E-Coin payment request", text, url: uri });
+        toast("Share sheet opened");
+        return;
+      } catch {
+        // Fall through to copy the request.
+      }
+    }
+    await navigator.clipboard.writeText(uri);
+    toast("Share not available, request copied");
+    return;
+  }
+  if (toggleButton) {
+    const state = requestState(request);
+    if (state === "fulfilled") {
+      request.fulfilledAt = null;
+      request.archivedAt = null;
+      toast("Request reopened");
+    } else {
+      request.fulfilledAt = Date.now();
+      request.archivedAt = null;
+      toast("Request marked paid");
+    }
+    savePaymentRequests();
+    renderPaymentRequests();
+    return;
+  }
+  if (archiveButton) {
+    const state = requestState(request);
+    if (state === "archived") {
+      request.archivedAt = null;
+      toast("Request restored");
+    } else {
+      request.archivedAt = Date.now();
+      toast("Request archived");
+    }
+    savePaymentRequests();
+    renderPaymentRequests();
+  }
 });
 $("#template-list").addEventListener("click", (event) => {
   const fillButton = event.target.closest("[data-template-fill]");
@@ -1650,7 +2478,9 @@ $("#max-amount").addEventListener("click", () => {
   updateComposer();
 });
 $("#smart-max").addEventListener("click", () => {
-  const spendable = smartReserveAmount();
+  const dailyRoom = guardPolicy.dailyLimit ? Math.max(0, guardPolicy.dailyLimit - spentToday() - activeFee) : Number.MAX_SAFE_INTEGER;
+  const policyRoom = Math.max(0, currentAccount.availableBalance - activeFee - guardPolicy.reserve);
+  const spendable = Math.min(smartReserveAmount(), dailyRoom, policyRoom);
   $("#amount").value = (spendable / SCALE).toFixed(6);
   toast(spendable ? "Safe spend amount selected" : "No safe spend amount available", !spendable);
   updateComposer();
@@ -1665,7 +2495,68 @@ $("#recipient").addEventListener("input", (event) => {
   }
   updateComposer();
 });
-$("#fee-tier").addEventListener("change", () => { applyFeeTier(); updateComposer(); });
+$("#fee-tier").addEventListener("change", () => { applyFeeTier(); updateComposer(); renderBatchComposer(); });
+$("#save-guard").addEventListener("click", () => {
+  const dailyLimit = Math.round(Number($("#guard-daily-limit").value) * SCALE);
+  const reserve = Math.round(Number($("#guard-reserve").value) * SCALE);
+  if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0 || !Number.isSafeInteger(reserve) || reserve < 0) return toast("Enter valid guard amounts", true);
+  guardPolicy = { dailyLimit, reserve, knownOnly:$("#guard-known-only").checked };
+  saveTransactionGuard();
+  renderTransactionGuardSettings();
+  updateComposer();
+  toast("Transaction Guard policy saved");
+});
+$("#batch-input").addEventListener("input", renderBatchComposer);
+$("#batch-example").addEventListener("click", () => {
+  if (contacts.length < 2) return toast("Save at least two contacts to build an example batch", true);
+  $("#batch-input").value = contacts.slice(0, Math.min(6, contacts.length)).map((contact, index) => `${contact.name}, ${(index + 1).toFixed(6)}, Batch payment ${index + 1}`).join("\n");
+  renderBatchComposer();
+  toast("Batch populated from saved contacts");
+});
+$("#submit-batch").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const analysis = analyzeBatchPayments();
+  if (analysis.blocked) return toast(analysis.errors[0] || analysis.policyReasons[0] || "Batch is not ready", true);
+  setBusy(button, true);
+  try {
+    const timestamp = Date.now();
+    const transactions = await Promise.all(analysis.entries.map(async (entry, index) => {
+      const tx = { from:wallet.address, to:entry.to, amount:entry.amount, fee:activeFee, nonce:currentAccount.nextNonce + index, memo:entry.memo, timestamp:timestamp + index, publicKey:wallet.publicKey };
+      tx.signature = await signTransaction(tx);
+      return tx;
+    }));
+    const result = await api("/transactions/batch", { method:"POST", body:JSON.stringify({ transactions }) });
+    recordRecentTransfers(transactions);
+    $("#batch-input").value = "";
+    batchDraft = [];
+    await refresh();
+    renderBatchComposer();
+    toast(`${result.queued} signed transfers queued atomically`);
+  } catch (error) {
+    await refresh().catch(() => {});
+    toast(`${error.message} — no partial batch was accepted`, true);
+  } finally { setBusy(button, false); }
+});
+$("#pending-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-speed-up]");
+  if (!button) return;
+  const pending = currentPending.find((tx) => tx.id === button.dataset.speedUp && tx.from === wallet.address && tx.type === "transfer");
+  if (!pending) return toast("That transfer is no longer pending", true);
+  setBusy(button, true);
+  try {
+    if (vaultState === "locked") throw new Error("Unlock the vault before replacing a fee");
+    const fee = Math.max(Math.ceil(pending.fee * 1.1), feeQuote.priority);
+    if (fee - pending.fee > currentAccount.availableBalance) throw new Error("Available balance cannot cover the higher fee");
+    const replacement = { from:pending.from, to:pending.to, amount:pending.amount, fee, nonce:pending.nonce, memo:pending.memo ?? "", timestamp:Date.now(), publicKey:wallet.publicKey };
+    replacement.signature = await signTransaction(replacement);
+    const result = await api("/transactions", { method:"POST", body:JSON.stringify(replacement) });
+    await refresh();
+    toast(`Fee raised to ${format(fee)} EC · queue position ${result.position}`);
+  } catch (error) {
+    await refresh().catch(() => {});
+    toast(error.message, true);
+  } finally { setBusy(button, false); }
+});
 $("#contact-picker").addEventListener("change", (event) => {
   if (!event.target.value) return;
   $("#recipient").value = event.target.value; updateComposer(); toast("Contact selected");
@@ -1699,9 +2590,12 @@ function buildRecoveryBundle() {
     wallet,
     walletHistory,
     recentTransfers,
-    transferTemplates,
-    paymentPlans,
-    contacts,
+  transferTemplates,
+  paymentPlans,
+  paymentRequests,
+  contacts,
+  transactionGuard: guardPolicy,
+  spendJournal,
   };
 }
 function restoreRecoveryBundle(bundle) {
@@ -1709,16 +2603,7 @@ function restoreRecoveryBundle(bundle) {
   if (!source || !source.privateKey || !source.publicKey || !source.address) throw new Error("This file does not contain a valid E-Coin wallet");
   return source;
 }
-$("#backup").addEventListener("click", () => {
-  if (vaultState === "locked") return toast("Unlock the vault before creating a backup", true);
-  const blob = new Blob([JSON.stringify(buildRecoveryBundle(), null, 2)], { type:"application/json" });
-  const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:`ecoin-wallet-${wallet.address.slice(0, 10)}.json` });
-  link.click(); URL.revokeObjectURL(link.href); toast("Wallet backup created—keep it private");
-});
-$("#import-key").addEventListener("change", async (event) => {
-  try {
-    if (vaultState === "locked") throw new Error("Unlock the vault before importing a wallet");
-    const imported = JSON.parse(await event.target.files[0].text());
+async function importRecoveryData(imported) {
     const source = restoreRecoveryBundle(imported);
     if (!source.privateKey || !source.publicKey || await addressFromKey(source.publicKey) !== source.address) throw new Error("This is not a valid E-Coin wallet backup");
     const [privateKey, publicKey] = await Promise.all([
@@ -1734,9 +2619,79 @@ $("#import-key").addEventListener("change", async (event) => {
     if (Array.isArray(imported.recentTransfers)) recentTransfers=imported.recentTransfers.slice(0,8);
     if (Array.isArray(imported.transferTemplates)) transferTemplates=imported.transferTemplates.slice(0,12);
     if (Array.isArray(imported.paymentPlans)) paymentPlans=imported.paymentPlans.slice(0,24);
+    if (Array.isArray(imported.paymentRequests)) paymentRequests=imported.paymentRequests.slice(0,24);
     if (Array.isArray(imported.walletHistory)) walletHistory=imported.walletHistory.slice(0,60);
-    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); saveWalletHistory();
-    renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderWalletHistory(); renderWalletDiagnostics(); showWallet(); await refresh(); toast("Wallet imported");
+    if (imported.transactionGuard && typeof imported.transactionGuard === "object") {
+      guardPolicy = {
+        dailyLimit:Number.isSafeInteger(imported.transactionGuard.dailyLimit) && imported.transactionGuard.dailyLimit >= 0 ? imported.transactionGuard.dailyLimit : 0,
+        reserve:Number.isSafeInteger(imported.transactionGuard.reserve) && imported.transactionGuard.reserve >= 0 ? imported.transactionGuard.reserve : 5 * SCALE,
+        knownOnly:Boolean(imported.transactionGuard.knownOnly),
+      };
+    }
+    if (Array.isArray(imported.spendJournal)) spendJournal=imported.spendJournal.filter((entry)=>entry && Number.isSafeInteger(entry.amount) && Number.isFinite(entry.timestamp)).slice(0,200);
+    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); savePaymentRequests(); saveWalletHistory(); saveTransactionGuard(); saveSpendJournal();
+    portfolioUpdatedAt=0; renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderWalletHistory(); renderWalletDiagnostics(); renderTransactionGuardSettings(); showWallet(); await refresh(); toast("Wallet imported");
+}
+
+function openRecoveryDialog(mode) {
+  $("#recovery-form").reset();
+  $("#recovery-overlay").dataset.mode = mode;
+  $("#recovery-confirm-row").hidden = mode !== "export";
+  $("#recovery-eyebrow").textContent = mode === "export" ? "PROTECT THE BACKUP" : "UNLOCK THE BACKUP";
+  $("#recovery-title").textContent = mode === "export" ? "Create an encrypted recovery bundle." : "Decrypt and verify this recovery bundle.";
+  $("#recovery-submit").textContent = mode === "export" ? "ENCRYPT & DOWNLOAD" : "DECRYPT & IMPORT";
+  $("#recovery-scope").textContent = mode === "export" ? "ACTIVE WALLET + LOCAL DATA" : "AUTHENTICATED BUNDLE";
+  $("#recovery-copy").textContent = mode === "export"
+    ? "This password is never stored. Without it, the recovery file cannot be opened."
+    : "AES-GCM verifies the file before any signing key or local data is imported.";
+  $("#recovery-overlay").hidden = false;
+  $("#recovery-password").focus();
+}
+
+function closeRecoveryDialog() {
+  $("#recovery-overlay").hidden = true;
+  $("#recovery-form").reset();
+  pendingRecoveryEnvelope = null;
+}
+
+$("#backup").addEventListener("click", () => {
+  if (vaultState === "locked") return toast("Unlock the vault before creating a backup", true);
+  pendingRecoveryEnvelope = null;
+  openRecoveryDialog("export");
+});
+$("#close-recovery").addEventListener("click", closeRecoveryDialog);
+$("#recovery-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("#recovery-submit"); setBusy(button, true);
+  try {
+    const password = $("#recovery-password").value;
+    const mode = $("#recovery-overlay").dataset.mode;
+    if (mode === "export") {
+      if (password.length < 10) throw new Error("Backup password must contain at least 10 characters");
+      if (password !== $("#recovery-confirm").value) throw new Error("Backup passwords do not match");
+      const envelope = await encryptRecoveryBundle(buildRecoveryBundle(), password);
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type:"application/json" });
+      const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:`ecoin-recovery-${wallet.address.slice(0, 10)}.json` });
+      link.click(); URL.revokeObjectURL(link.href); recoveryAudit[wallet.address] = Date.now(); localStorage.setItem(recoveryAuditKey, JSON.stringify(recoveryAudit)); closeRecoveryDialog(); renderSessionSecurity(); toast("Encrypted recovery bundle created");
+      return;
+    }
+    if (!pendingRecoveryEnvelope) throw new Error("Encrypted recovery data is missing");
+    const imported = await decryptRecoveryBundle(pendingRecoveryEnvelope, password);
+    await importRecoveryData(imported);
+    closeRecoveryDialog();
+  } catch (error) { toast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+$("#import-key").addEventListener("change", async (event) => {
+  try {
+    if (vaultState === "locked") throw new Error("Unlock the vault before importing a wallet");
+    const imported = JSON.parse(await event.target.files[0].text());
+    if (imported?.kind === "ecoin-encrypted-recovery") {
+      pendingRecoveryEnvelope = imported;
+      openRecoveryDialog("import");
+    } else {
+      await importRecoveryData(imported);
+    }
   } catch (error) { toast(error.message, true); }
   event.target.value = "";
 });
@@ -1751,6 +2706,12 @@ $("#send-form").addEventListener("submit", async (event) => {
     if (amount + activeFee > currentAccount.availableBalance) throw new Error("Amount plus fee exceeds your available balance");
     const recipientProfile = await api(`/accounts/${recipient}`);
     pendingDraft = { from:wallet.address, to:recipient, amount, fee:activeFee, nonce:currentAccount.nextNonce, memo:$("#memo").value.trim(), timestamp:Date.now(), publicKey:wallet.publicKey };
+    const guard = evaluateTransactionGuard(pendingDraft, recipientProfile);
+    renderTransactionGuard(recipientProfile);
+    if (guard.blocked) {
+      pendingDraft = null;
+      throw new Error("Transaction Guard blocked this draft under your saved policy");
+    }
     showReview(pendingDraft, recipientProfile);
   } catch (error) { toast(error.message, true); } finally { setBusy(button, false); }
 });
@@ -1794,6 +2755,30 @@ $("#contract-form").addEventListener("submit",async(event)=>{
   } catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
 $("#contract-list").addEventListener("click",(event)=>{const button=event.target.closest("[data-claim]");if(!button)return;$("#claim-form").reset();$("#claim-address").value=button.dataset.claim;$("#claim-overlay").hidden=false;$("#claim-secret").focus();});
+$("#contract-flow-filter").addEventListener("change", (event) => {
+  contractFlowFilter = event.target.value;
+  renderContractIntelligence();
+});
+$("#contract-timeline").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-contract-flow-claim]");
+  if (!button) return;
+  $("#claim-form").reset();
+  $("#claim-address").value = button.dataset.contractFlowClaim;
+  $("#claim-overlay").hidden = false;
+  $("#claim-secret").focus();
+});
+$("#export-contract-schedule").addEventListener("click", () => {
+  const rows = contractTimelineRows();
+  if (!rows.length) return toast("No active contract schedule to export", true);
+  const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const lines = [
+    ["due_at", "direction", "amount_ec", "event", "contract_type", "contract_address", "creator", "beneficiary", "memo"],
+    ...rows.map((row) => [new Date(row.dueAt).toISOString(), row.direction, (row.amount / SCALE).toFixed(6), row.kind, row.contract.contractType, row.contract.address, row.contract.creator, row.contract.beneficiary, row.contract.memo || ""]),
+  ];
+  const blob = new Blob([lines.map((line) => line.map(csvCell).join(",")).join("\n")], { type:"text/csv;charset=utf-8" });
+  const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:`ecoin-contract-schedule-${wallet.address.slice(0, 10)}.csv` });
+  link.click(); URL.revokeObjectURL(link.href); toast("Contract schedule exported");
+});
 $("#close-claim").addEventListener("click",closeClaim);
 $("#claim-form").addEventListener("submit",async(event)=>{
   event.preventDefault(); const button=event.currentTarget.querySelector("button[type='submit']"); setBusy(button,true);
@@ -1816,6 +2801,7 @@ document.addEventListener("keydown", (event) => {
   if (!$("#receipt-overlay").hidden) closeReceipt();
   if (!$("#wallet-overlay").hidden) closeWalletManager();
   if (!$("#vault-overlay").hidden) closeVaultDialog();
+  if (!$("#recovery-overlay").hidden) closeRecoveryDialog();
   if (!$("#contract-overlay").hidden) closeContract();
   if (!$("#buy-overlay").hidden) $("#buy-overlay").hidden=true;
   if (!$("#claim-overlay").hidden) closeClaim();
@@ -1824,6 +2810,8 @@ $("#confirm-send").addEventListener("click", async (event) => {
   if (!pendingDraft) return;
   const button = event.currentTarget; setBusy(button,true);
   try {
+    const guard = evaluateTransactionGuard(pendingDraft);
+    if (guard.blocked) throw new Error("Transaction Guard policy changed or its daily limit was reached");
     pendingDraft.timestamp = Date.now();
     pendingDraft.signature = await signTransaction(pendingDraft);
     const result = await api("/transactions", { method:"POST", body:JSON.stringify(pendingDraft) });
@@ -1839,6 +2827,7 @@ function updateComposer() {
   const status = $("#composer-status");
   const projected = currentAccount.availableBalance - (Number.isSafeInteger(amount) && amount > 0 ? amount + activeFee : 0);
   $("#projected-balance").textContent = amount > 0 ? `BALANCE AFTER ${format(Math.max(0,projected))} EC` : "BALANCE AFTER —";
+  renderTransactionGuard();
   status.className = "";
   if (vaultState === "locked") {
     status.textContent = "UNLOCK THE VAULT TO SIGN";
@@ -1859,7 +2848,9 @@ function showReview(tx, profile) {
   $("#review-fee").textContent = `${format(tx.fee)} EC (${(tx.fee / tx.amount * 100).toFixed(2)}%)`;
   $("#review-balance").textContent = `${format(currentAccount.availableBalance - tx.amount - tx.fee)} EC`;
   $("#review-history").textContent = profile.insights.transactionCount ? `${profile.insights.transactionCount} prior transaction${profile.insights.transactionCount === 1 ? "" : "s"}` : "No prior activity";
-  const signals = [];
+  const guard = evaluateTransactionGuard(tx, profile);
+  const signals = guard.signals.map((signal) => [signal.tone, signal.text]);
+  signals.unshift([guard.blocked ? "warning" : "", `Transaction Guard score: ${guard.risk}/100${guard.blocked ? " · policy blocked" : ""}.`]);
   if (!profile.insights.transactionCount) signals.push(["warning","New destination: this address has no committed E-Coin history."]);
   else signals.push(["","Known destination: activity exists on the committed ledger."]);
   if (watchlist.includes(tx.to)) signals.push(["","Watched destination: this address is already on your local monitor list."]);
@@ -1933,6 +2924,8 @@ function renderContacts() {
     ? contacts.map((contact)=>`<div class="contact-entry"><div><b>${escapeHtml(contact.name)}</b><code>${escapeHtml(short(contact.address,12))}</code></div><button type="button" data-address="${contact.address}" aria-label="Remove ${escapeHtml(contact.name)}">REMOVE</button></div>`).join("")
     : '<div class="contact-empty">NO SAVED CONTACTS YET</div>';
   renderRecentTransfers();
+  renderTransactionGuard();
+  renderBatchComposer();
 }
 
 async function showReceipt(height) {
@@ -1958,7 +2951,7 @@ async function showReceipt(height) {
   $("#receipt-overlay").hidden=false; $("#close-receipt").focus();
 }
 
-function showWallet() { $("#address").textContent = wallet.address; $("#address").title = wallet.address; renderWallets(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderReceivePanel(); }
+function showWallet() { $("#address").textContent = wallet.address; $("#address").title = wallet.address; renderWallets(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderReceivePanel(); renderSessionSecurity(); }
 async function sha256Text(value) { const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value))); return [...digest].map((byte)=>byte.toString(16).padStart(2,"0")).join(""); }
 function fromBase64Url(value) { const base64=value.replace(/-/g,"+").replace(/_/g,"/").padEnd(Math.ceil(value.length/4)*4,"="); return Uint8Array.from(atob(base64), (c)=>c.charCodeAt(0)); }
 function toBase64Url(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,""); }
@@ -1996,5 +2989,5 @@ document.querySelectorAll(".nav-link").forEach((button)=>button.addEventListener
 }));
 renderQuiz();
 
-try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(() => refresh().catch(()=>{}), 15_000); }
+try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); loadSessionSecurity(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); renderSessionSecurity(); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(checkSessionSecurity,1_000); setInterval(() => refresh().catch(()=>{}), 15_000); }
 catch (error) { $("#address").textContent = "Wallet unavailable"; toast(error.message, true); }

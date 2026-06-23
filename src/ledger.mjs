@@ -20,6 +20,7 @@ export const MAX_MARKET_ORDER_EC = 10_000 * SCALE;
 export const MAX_ACTIVE_CONTRACTS_PER_CREATOR = 100;
 export const MAX_CONTRACT_EXECUTIONS_PER_BLOCK = 500;
 export const MAX_PENDING_PER_SENDER = 256;
+export const MAX_BATCH_TRANSFERS = 32;
 
 function marketPriceMicroUsd(volumeUsdCents) {
   return BASE_MARKET_PRICE_MICRO_USD + Math.floor(volumeUsdCents / 10_000) * 1_000;
@@ -395,10 +396,19 @@ export class Ledger {
       sent,
       feesPaid,
       counterparties: counterpartyStats.size,
-      topCounterparties:[...counterpartyStats.values()].sort((a,b)=>b.count-a.count || b.lastActive-a.lastActive).slice(0,3),
+      topCounterparties:[...counterpartyStats.values()].sort((a,b)=>
+        b.count-a.count
+        || (b.received+b.sent)-(a.received+a.sent)
+        || b.lastActive-a.lastActive
+        || a.address.localeCompare(b.address)
+      ).slice(0,3),
       firstSeen: activity[0]?.settledAt ?? null,
       lastActive: activity.at(-1)?.settledAt ?? null,
     };
+  }
+
+  getActivity(address, limit = 50) {
+    return [...(this.activityByAddress.get(address) ?? [])].slice(-Math.max(1, limit)).reverse();
   }
 
   getBlock(identifier) {
@@ -833,6 +843,29 @@ export class Ledger {
     this.pending.push(tx);
     this.#indexPending(tx);
     return { transaction:tx, position:this.pending.length, status:"pending", duplicate:false };
+  }
+
+  queueBatch(inputs) {
+    this.prunePending();
+    if (!Array.isArray(inputs) || inputs.length < 2 || inputs.length > MAX_BATCH_TRANSFERS) throw new Error(`Batch must contain 2-${MAX_BATCH_TRANSFERS} transfers`);
+    const sender = inputs[0]?.from;
+    if (!sender || inputs.some((input) => input?.from !== sender)) throw new Error("Every batch transfer must use the same sender");
+    const before = this.pending.map((tx) => ({ ...tx }));
+    try {
+      const results = inputs.map((input) => this.queue(input));
+      const positions = results.map((result) => result.position).filter(Number.isSafeInteger);
+      return {
+        results,
+        queued:results.filter((result) => !result.duplicate).length,
+        duplicates:results.filter((result) => result.duplicate).length,
+        firstPosition:positions.length ? Math.min(...positions) : null,
+        lastPosition:positions.length ? Math.max(...positions) : null,
+      };
+    } catch (error) {
+      this.pending = before;
+      this.#rebuildPendingIndexes();
+      throw error;
+    }
   }
 
   queueContract(input) {

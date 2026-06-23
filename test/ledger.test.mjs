@@ -114,6 +114,19 @@ test("insights summarize activity and replay verification catches state corrupti
   assert.equal(ledger.verifyIntegrity(),false);
 });
 
+test("activity feed returns newest-first indexed history for a wallet", () => {
+  const ledger = new Ledger();
+  const alice = wallet();
+  const bob = wallet();
+  ledger.fund(alice.address, 4 * SCALE);
+  ledger.submit(signedTransfer(alice, bob, { amount: SCALE }));
+  const activity = ledger.getActivity(alice.address, 10);
+  assert.equal(activity.length, 2);
+  assert.equal(activity[0].to, bob.address);
+  assert.equal(activity[0].settledAt >= activity[1].settledAt, true);
+  assert.equal(activity[1].type, "faucet");
+});
+
 test("ledger search indexes blocks, accounts, and transactions", () => {
   const ledger = new Ledger(); const alice=wallet(); const bob=wallet(); ledger.fund(alice.address,5*SCALE);
   const { transaction, block } = ledger.submit(signedTransfer(alice,bob,{amount:SCALE}));
@@ -147,6 +160,30 @@ test("mempool reserves balances and batches nonce-ordered transfers", () => {
   assert.equal(block.transactions.length,2);
   assert.equal(ledger.pending.length,0);
   assert.equal(ledger.getAccount(alice.address).nonce,2);
+  assert.equal(ledger.verifyIntegrity(),true);
+});
+
+test("signed batch queue is atomic and preserves consecutive sender nonces", () => {
+  const ledger=new Ledger(); const alice=wallet(); const bob=wallet(); const carol=wallet(); ledger.fund(alice.address,6*SCALE);
+  const batch=[
+    signedTransfer(alice,bob,{amount:SCALE,nonce:1,timestamp:Date.now()}),
+    signedTransfer(alice,carol,{amount:2*SCALE,nonce:2,timestamp:Date.now()+1}),
+  ];
+  const result=ledger.queueBatch(batch);
+  assert.equal(result.queued,2);
+  assert.equal(ledger.pending.length,2);
+  assert.equal(ledger.getAvailableAccount(alice.address).nextNonce,3);
+  const invalid=[
+    signedTransfer(alice,bob,{amount:SCALE,nonce:3,timestamp:Date.now()+2}),
+    signedTransfer(alice,carol,{amount:10*SCALE,nonce:4,timestamp:Date.now()+3}),
+  ];
+  assert.throws(()=>ledger.queueBatch(invalid),/balance/i);
+  assert.equal(ledger.pending.length,2);
+  assert.equal(ledger.getAvailableAccount(alice.address).nextNonce,3);
+  const block=ledger.produceBlock();
+  assert.equal(block.transactions.length,2);
+  assert.equal(ledger.getAccount(bob.address).balance,SCALE);
+  assert.equal(ledger.getAccount(carol.address).balance,2*SCALE);
   assert.equal(ledger.verifyIntegrity(),true);
 });
 

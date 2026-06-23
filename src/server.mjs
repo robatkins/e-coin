@@ -120,6 +120,11 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname.startsWith("/api/accounts/")) {
     const address = decodeURIComponent(url.pathname.slice("/api/accounts/".length));
+    if (address.includes("/activity")) {
+      const target = decodeURIComponent(address.slice(0, -"/activity".length));
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 60, 1), 250);
+      return sendJson(response, 200, { address: target, activity: ledger.getActivity(target, limit), insights: ledger.getInsights(target) });
+    }
     return sendJson(response, 200, { address, ...ledger.getAvailableAccount(address), faucetClaimed: ledger.hasFaucetClaim(address), insights:ledger.getInsights(address) });
   }
   if (request.method === "POST" && url.pathname === "/api/faucet") {
@@ -134,6 +139,13 @@ async function handleApi(request, response, url) {
     await persist();
     if (!result.duplicate) broadcast("mempool",{size:ledger.pending.length,transactionId:result.transaction.id,replaced:result.replaced??null});
     return sendJson(response, result.duplicate?200:202, { ...result, expectedBy:result.status==="pending"?nextBlockAt:null });
+  }
+  if (request.method === "POST" && url.pathname === "/api/transactions/batch") {
+    const body = await readBody(request);
+    const result = ledger.queueBatch(body.transactions);
+    await persist();
+    if (result.queued) broadcast("mempool",{size:ledger.pending.length,batchSize:result.queued,firstPosition:result.firstPosition,lastPosition:result.lastPosition});
+    return sendJson(response, result.queued?202:200, { ...result, expectedBy:result.queued?nextBlockAt:null });
   }
   if (request.method === "POST" && url.pathname === "/api/contracts") {
     const result=ledger.queueContract(await readBody(request));

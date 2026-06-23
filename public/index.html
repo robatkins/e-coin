@@ -74,11 +74,11 @@
         </div>
         <div class="receive-panel">
           <div class="section-title compact"><div><p class="eyebrow">RECEIVE FUNDS</p><h2>Share this wallet</h2></div><small>LOCAL REQUEST URI</small></div>
-          <div class="receive-grid">
-            <svg id="receive-code" viewBox="0 0 216 216" role="img" aria-label="Wallet receive code"></svg>
-            <div class="receive-copy">
-              <div><span>REQUEST URI</span><code id="receive-uri">—</code></div>
-              <div><span>ADDRESS</span><b id="receive-address">—</b></div>
+        <div class="receive-grid">
+          <svg id="receive-code" viewBox="0 0 216 216" role="img" aria-label="Wallet receive code"></svg>
+          <div class="receive-copy">
+            <div><span>REQUEST URI</span><code id="receive-uri">—</code></div>
+            <div><span>ADDRESS</span><b id="receive-address">—</b></div>
               <div class="receive-actions">
                 <button class="button ghost" id="copy-request" type="button">COPY REQUEST</button>
                 <button class="button ghost" id="share-request" type="button">SHARE</button>
@@ -87,7 +87,32 @@
             </div>
           </div>
         </div>
+        <div class="request-panel">
+          <div class="section-title compact"><div><p class="eyebrow">PAYMENT REQUESTS</p><h2>Track invoices and payment links</h2></div><small id="request-summary">Create a request to share with a sender.</small></div>
+          <div class="request-form">
+            <input id="request-label" type="text" maxlength="32" placeholder="Request label">
+            <input id="request-amount" type="number" min="0" step="0.000001" placeholder="Amount EC">
+            <input id="request-memo" type="text" maxlength="96" placeholder="Memo or invoice note">
+            <input id="request-expiry" type="number" min="0" step="1" value="72" placeholder="Expires in hours">
+            <button class="button primary" id="create-request" type="button">CREATE REQUEST</button>
+          </div>
+          <p class="microcopy">Requests stay local to this browser. A request can be copied, shared, marked paid, or loaded back into the send form.</p>
+          <div id="request-list" class="request-list"><p class="empty">No payment requests yet.</p></div>
+        </div>
         <div class="wallet-security"><span>WALLET VAULT</span><b id="vault-state">LOCAL STORAGE</b><button class="vault-action" id="vault-action" type="button">ENABLE VAULT</button></div>
+        <div class="session-security">
+          <div class="section-title compact"><div><p class="eyebrow">SESSION SECURITY</p><h2>Automatic key protection</h2></div><small id="session-security-state">VAULT NOT ENABLED</small></div>
+          <div class="session-security-metrics">
+            <div><span>SIGNING SESSION</span><b id="session-countdown">NOT PROTECTED</b></div>
+            <div><span>RECOVERY AGE</span><b id="recovery-age">NO ENCRYPTED BACKUP</b></div>
+          </div>
+          <div class="session-security-controls">
+            <label>AUTO-LOCK<select id="session-timeout" aria-label="Automatic vault lock timeout"><option value="5">AFTER 5 MINUTES</option><option value="15" selected>AFTER 15 MINUTES</option><option value="30">AFTER 30 MINUTES</option><option value="60">AFTER 1 HOUR</option><option value="0">NEVER</option></select></label>
+            <label class="guard-toggle"><input id="lock-when-hidden" type="checkbox" checked><span>LOCK WHEN APP IS HIDDEN</span></label>
+            <button class="button ghost" id="lock-session-now" type="button">LOCK NOW</button>
+          </div>
+          <p id="session-security-guidance" class="microcopy">Enable the encrypted vault to use automatic session locking.</p>
+        </div>
         <div class="wallet-actions">
           <button class="button primary" id="faucet">GET 25 TEST EC</button>
           <button class="button ghost" id="open-buy" type="button">BUY WITH USD</button>
@@ -111,6 +136,46 @@
             <label>MEMO <span>OPTIONAL</span><input id="memo" maxlength="96" placeholder="What is this for?"></label>
           </div>
           <div class="send-intel"><span id="composer-status">ENTER A TRANSFER TO ANALYZE</span><b id="projected-balance">BALANCE AFTER —</b></div>
+          <div class="guard-panel">
+            <div class="section-title compact"><div><p class="eyebrow">TRANSACTION GUARD</p><h2>Personal signing policy</h2></div><small id="guard-state">MONITORING</small></div>
+            <div class="guard-score">
+              <div><span>RISK SCORE</span><b id="guard-risk">0 / 100</b></div>
+              <div><span>SPENT TODAY</span><b id="guard-spent">0.000000 EC</b></div>
+              <div><span>DAILY ROOM</span><b id="guard-room">NO LIMIT</b></div>
+              <p id="guard-guidance">The guard evaluates each draft before your key is used.</p>
+            </div>
+            <div class="guard-settings">
+              <label>DAILY SEND LIMIT <span>0 DISABLES</span><input id="guard-daily-limit" type="number" min="0" step="0.000001" value="0"></label>
+              <label>MINIMUM RESERVE <span>EC</span><input id="guard-reserve" type="number" min="0" step="0.000001" value="5"></label>
+              <label class="guard-toggle"><input id="guard-known-only" type="checkbox"><span>ONLY SIGN TO SAVED CONTACTS</span></label>
+              <button class="button ghost" id="save-guard" type="button">SAVE POLICY</button>
+            </div>
+            <div id="guard-signals" class="guard-signals"><div class="signal">Fill a transfer to see its safety signals.</div></div>
+          </div>
+          <div class="batch-panel">
+            <div class="section-title compact"><div><p class="eyebrow">BATCH PAYMENTS</p><h2>Sign many transfers together</h2></div><small>2–32 RECIPIENTS</small></div>
+            <p class="microcopy">One transfer per line: <code>address or contact name, amount, memo</code>. Every payment receives its own signature and consecutive nonce; the node accepts the complete batch or none of it.</p>
+            <textarea id="batch-input" rows="6" spellcheck="false" placeholder="Payroll, 2.500000, June payment&#10;ec1…, 1.000000, Refund"></textarea>
+            <div class="batch-metrics">
+              <div><span>RECIPIENTS</span><b id="batch-count">0</b></div>
+              <div><span>TRANSFER TOTAL</span><b id="batch-total">0.000000 EC</b></div>
+              <div><span>NETWORK FEES</span><b id="batch-fees">0.000000 EC</b></div>
+              <div><span>BALANCE AFTER</span><b id="batch-after">—</b></div>
+            </div>
+            <div id="batch-status" class="search-summary">Add at least two valid payment rows.</div>
+            <div id="batch-preview" class="batch-preview"><p class="empty">The validated batch will appear here.</p></div>
+            <div class="batch-actions"><button class="button ghost" id="batch-example" type="button">USE CONTACTS</button><button class="button primary" id="submit-batch" type="button" disabled>SIGN &amp; QUEUE BATCH</button></div>
+          </div>
+          <div class="pending-panel">
+            <div class="section-title compact"><div><p class="eyebrow">PENDING CONTROL</p><h2>Manage unsettled transfers</h2></div><small>SAFE FEE REPLACEMENT</small></div>
+            <div class="pending-metrics">
+              <div><span>YOUR QUEUE</span><b id="pending-own-count">0 TRANSFERS</b></div>
+              <div><span>VALUE RESERVED</span><b id="pending-own-value">0.000000 EC</b></div>
+              <div><span>NEXT SETTLEMENT</span><b id="pending-own-eta">—</b></div>
+            </div>
+            <p id="pending-guidance" class="search-summary">No outgoing transfers are waiting for settlement.</p>
+            <div id="pending-list" class="pending-list"><p class="empty">Queued transfers will appear here with fee and expiry intelligence.</p></div>
+          </div>
           <div class="transfer-panel">
             <div class="section-title compact"><div><p class="eyebrow">SMART DRAFTS</p><h2>Recent sends</h2></div><small>LEARNED LOCALLY</small></div>
             <div id="transfer-summary" class="search-summary">No recent transfers yet.</div>
@@ -153,6 +218,17 @@
     <section class="contracts-section">
       <div class="section-title"><div><p class="eyebrow">PROGRAMMABLE E-COIN</p><h2>Smart contracts</h2></div><button class="button primary" id="open-contract" type="button">NEW CONTRACT</button></div>
       <div class="contract-summary"><div><span>CONTRACTS</span><b id="contract-count">0</b></div><div><span>LOCKED BY THIS WALLET</span><b id="contract-locked">0.000000 EC</b></div><p>Deploy audited templates for one-time releases or scheduled vesting. Execution is deterministic and verified in every block.</p></div>
+      <div class="contract-intelligence">
+        <div class="section-title compact"><div><p class="eyebrow">CONTRACT INTELLIGENCE</p><h2>Exposure and cash-flow timeline</h2></div><div class="contract-tools"><select id="contract-flow-filter" aria-label="Contract flow filter"><option value="all">ALL FLOWS</option><option value="incoming">INCOMING</option><option value="outgoing">OUTGOING</option><option value="soon">DUE SOON</option></select><button class="button ghost" id="export-contract-schedule" type="button">EXPORT SCHEDULE</button></div></div>
+        <div class="contract-intel-metrics">
+          <div><span>OUTBOUND LOCKED</span><b id="contract-outbound">0.000000 EC</b></div>
+          <div><span>INBOUND EXPECTED</span><b id="contract-inbound">0.000000 EC</b></div>
+          <div><span>NEXT CASH FLOW</span><b id="contract-next-flow">—</b></div>
+          <div><span>RISK SCORE</span><b id="contract-risk">0 / 100</b></div>
+        </div>
+        <p id="contract-intel-guidance" class="search-summary">Contract intelligence will appear when this wallet creates or receives a programmable payment.</p>
+        <div id="contract-timeline" class="contract-timeline"><p class="empty">No scheduled contract cash flows.</p></div>
+      </div>
       <div class="contract-list" id="contract-list"><p class="empty">No contracts for this wallet yet.</p></div>
     </section>
 
@@ -178,6 +254,41 @@
           <span>AI-LIKE RECOMMENDATION</span>
           <p id="data-recommendation">The system will summarize current pressure, trend, and treasury state here.</p>
         </div>
+      </div>
+      <div class="portfolio-panel">
+        <div class="section-title"><div><p class="eyebrow">LOCAL PORTFOLIO</p><h2>All wallets, one view</h2></div><button class="button ghost" id="refresh-portfolio" type="button">REFRESH PORTFOLIO</button></div>
+        <div class="portfolio-metrics">
+          <div><span>TOTAL HOLDINGS</span><b id="portfolio-total">—</b><small id="portfolio-usd">—</small></div>
+          <div><span>AVAILABLE NOW</span><b id="portfolio-available">—</b><small id="portfolio-reserved">—</small></div>
+          <div><span>CONCENTRATION</span><b id="portfolio-concentration">—</b><small id="portfolio-diversity">—</small></div>
+          <div><span>PORTFOLIO HEALTH</span><b id="portfolio-health">ANALYZING</b><small id="portfolio-health-note">Loading local accounts.</small></div>
+        </div>
+        <div class="portfolio-allocation" aria-label="Wallet allocation chart"><div id="portfolio-allocation-bar"></div></div>
+        <p id="portfolio-guidance" class="search-summary">Portfolio intelligence compares every wallet stored in this browser.</p>
+        <div id="portfolio-list" class="portfolio-list"><p class="empty">Loading local wallets…</p></div>
+      </div>
+      <div class="activity-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">ACTIVITY CENTER</p><h2>Statement and anomaly review</h2></div>
+          <div class="activity-tools">
+            <button class="button ghost" id="export-activity-csv" type="button">EXPORT CSV</button>
+            <button class="button ghost" id="export-activity-json" type="button">EXPORT JSON</button>
+          </div>
+        </div>
+        <div class="activity-metrics">
+          <div><span>INFLOW</span><b id="activity-inflow">—</b></div>
+          <div><span>OUTFLOW</span><b id="activity-outflow">—</b></div>
+          <div><span>FEES</span><b id="activity-fees">—</b></div>
+          <div><span>NET</span><b id="activity-net">—</b></div>
+          <div><span>TX COUNT</span><b id="activity-count">—</b></div>
+          <div><span>COUNTERPARTIES</span><b id="activity-counterparties">—</b></div>
+        </div>
+        <div class="activity-summary">
+          <span>STATEMENT WINDOW</span>
+          <p id="activity-summary">Loading activity…</p>
+          <small id="activity-note">The ledger feed will populate once the wallet activity index is available.</small>
+        </div>
+        <div id="activity-list" class="activity-list"><p class="empty">No confirmed activity yet.</p></div>
       </div>
       <div class="data-explorer">
         <div class="section-title"><div><p class="eyebrow">LEDGER EXPLORER</p><h2>Search the chain</h2></div><small>BLOCKS, TRANSACTIONS, ACCOUNTS, CONTRACTS</small></div>
@@ -295,6 +406,25 @@
         <button class="button primary contact-save" type="submit" id="vault-submit">ENABLE VAULT</button>
       </form>
       <p class="microcopy" id="vault-copy">This password encrypts every local private key before it is written to storage.</p>
+    </section>
+  </div>
+
+  <div class="review-overlay" id="recovery-overlay" role="dialog" aria-modal="true" aria-labelledby="recovery-title" hidden>
+    <section class="review-card compact-card">
+      <div class="panel-head"><span>ENCRYPTED RECOVERY</span><button class="review-close" id="close-recovery" type="button" aria-label="Close recovery dialog">×</button></div>
+      <p class="eyebrow" id="recovery-eyebrow">PROTECT THE BACKUP</p>
+      <h2 id="recovery-title">Create an encrypted recovery bundle.</h2>
+      <form id="recovery-form" autocomplete="off">
+        <label for="recovery-password">BACKUP PASSWORD</label>
+        <input id="recovery-password" type="password" autocomplete="new-password" minlength="10" required placeholder="At least 10 characters">
+        <div id="recovery-confirm-row">
+          <label for="recovery-confirm">CONFIRM PASSWORD</label>
+          <input id="recovery-confirm" type="password" autocomplete="new-password" minlength="10" placeholder="Repeat the backup password">
+        </div>
+        <div class="recovery-summary"><span>ENCRYPTION <b>PBKDF2 + AES-256-GCM</b></span><span>INTEGRITY <b>AUTHENTICATED</b></span><span>SCOPE <b id="recovery-scope">ACTIVE WALLET + LOCAL DATA</b></span></div>
+        <button class="button primary contact-save" type="submit" id="recovery-submit">ENCRYPT &amp; DOWNLOAD</button>
+      </form>
+      <p class="microcopy" id="recovery-copy">This password is never stored. Without it, the recovery file cannot be opened.</p>
     </section>
   </div>
 

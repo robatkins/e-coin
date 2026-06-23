@@ -1,6 +1,7 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const VAULT_CONTEXT = encoder.encode("ecoin-wallet-vault:v1");
+const RECOVERY_CONTEXT = encoder.encode("ecoin-recovery-bundle:v1");
 const VAULT_ITERATIONS = 210000;
 
 function toBase64Url(bytes) {
@@ -77,4 +78,44 @@ export async function decryptWalletVault(envelope, password) {
   const wallets = Array.isArray(parsed.wallets) ? parsed.wallets.map(normalizeWallet).filter(Boolean) : [];
   if (!wallets.length) throw new Error("Vault did not contain any usable wallets");
   return wallets;
+}
+
+export async function encryptRecoveryBundle(bundle, password) {
+  if (!bundle || typeof bundle !== "object") throw new Error("Recovery data is missing");
+  if (typeof password !== "string" || password.trim().length < 10) throw new Error("Recovery password must contain at least 10 characters");
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveVaultKey(password.trim(), salt);
+  const payload = encoder.encode(JSON.stringify(bundle));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name:"AES-GCM", iv, additionalData:RECOVERY_CONTEXT }, key, payload));
+  return {
+    kind:"ecoin-encrypted-recovery",
+    version:1,
+    algorithm:"PBKDF2+A256GCM",
+    iterations:VAULT_ITERATIONS,
+    createdAt:Date.now(),
+    salt:toBase64Url(salt),
+    iv:toBase64Url(iv),
+    ciphertext:toBase64Url(ciphertext),
+  };
+}
+
+export async function decryptRecoveryBundle(envelope, password) {
+  if (!envelope || envelope.kind !== "ecoin-encrypted-recovery" || envelope.version !== 1) throw new Error("This is not an encrypted E-Coin recovery bundle");
+  if (envelope.algorithm !== "PBKDF2+A256GCM") throw new Error("Unsupported recovery encryption algorithm");
+  if (!Number.isSafeInteger(envelope.iterations) || envelope.iterations < 100_000 || envelope.iterations > 1_000_000) throw new Error("Invalid recovery key-derivation settings");
+  if (typeof password !== "string" || !password.trim()) throw new Error("Recovery password cannot be blank");
+  try {
+    const key = await deriveVaultKey(password.trim(), fromBase64Url(envelope.salt), envelope.iterations);
+    const plaintext = new Uint8Array(await crypto.subtle.decrypt(
+      { name:"AES-GCM", iv:fromBase64Url(envelope.iv), additionalData:RECOVERY_CONTEXT },
+      key,
+      fromBase64Url(envelope.ciphertext),
+    ));
+    const parsed = JSON.parse(decoder.decode(plaintext));
+    if (!parsed || typeof parsed !== "object") throw new Error("Recovery payload is invalid");
+    return parsed;
+  } catch {
+    throw new Error("Recovery password is incorrect or the backup was modified");
+  }
 }
