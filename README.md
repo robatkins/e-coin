@@ -2,6 +2,12 @@
 
 E-Coin is an original, account-based cryptocurrency experiment with a browser wallet. It is not Bitcoin and does not reuse Bitcoin's code, transaction model, address format, mining, or protocol.
 
+## Screenshots
+
+![E-Coin wallet screenshot 1](./screenshot1.png)
+![E-Coin wallet screenshot 2](./screenshot2.png)
+![E-Coin wallet screenshot 3](./screenshot3.png)
+
 ## Current build (protocol 8)
 
 - Ed25519 wallet identities and `ec1…` addresses
