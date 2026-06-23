@@ -7,6 +7,9 @@ E-Coin is an original, account-based cryptocurrency experiment with a browser wa
 ![E-Coin wallet screenshot 1](./screenshot1.png)
 ![E-Coin wallet screenshot 2](./screenshot2.png)
 ![E-Coin wallet screenshot 3](./screenshot3.png)
+![E-Coin wallet screenshot 3](./screenshot4.png)
+![E-Coin wallet screenshot 3](./screenshot5.png)
+![E-Coin wallet screenshot 3](./screenshot6.png)
 
 ## Current build (protocol 8)
 
