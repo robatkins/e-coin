@@ -66,6 +66,18 @@ export function canonicalContractDeployment(tx) {
   });
 }
 
+export function canonicalContractApproval(tx) {
+  return JSON.stringify({
+    contractAddress: tx.contractAddress,
+    from: tx.from,
+    milestone: tx.milestone,
+    fee: tx.fee,
+    nonce: tx.nonce,
+    timestamp: tx.timestamp,
+    publicKey: tx.publicKey,
+  });
+}
+
 export function canonicalMarketOrder(order) {
   return JSON.stringify({
     address: order.address,
@@ -106,12 +118,12 @@ function stateRoot(accounts) {
 }
 
 function contractRoot(contracts) {
-  const snapshot=[...contracts.values()].sort((a,b)=>a.address.localeCompare(b.address)).map((contract)=>[contract.address,contract.contractType,contract.creator,contract.beneficiary,contract.amount,contract.unlockTime,contract.installments??1,contract.intervalMs??0,contract.secretHash??"",contract.refundTime??0,contract.releasedInstallments??0,contract.releasedAmount??0,contract.status,contract.releasedAt??null]);
+  const snapshot=[...contracts.values()].sort((a,b)=>a.address.localeCompare(b.address)).map((contract)=>[contract.address,contract.contractType,contract.creator,contract.beneficiary,contract.amount,contract.unlockTime,contract.installments??1,contract.intervalMs??0,contract.secretHash??"",contract.refundTime??0,contract.releasedInstallments??0,contract.releasedAmount??0,contract.status,contract.releasedAt??null,contract.approvalRound??0,contract.creatorApprovedRound??0,contract.beneficiaryApprovedRound??0]);
   return sha256(JSON.stringify(snapshot));
 }
 
 function transactionId(tx) {
-  const payload=tx.type==="contract_deploy" || tx.contractType ? canonicalContractDeployment(tx) : canonicalTransaction(tx);
+  const payload=tx.type==="contract_deploy" || tx.contractType ? canonicalContractDeployment(tx) : tx.type==="contract_approve" ? canonicalContractApproval(tx) : canonicalTransaction(tx);
   return sha256(`${payload}:${tx.signature}`);
 }
 
@@ -233,7 +245,7 @@ export class Ledger {
       maxPendingPerSender:MAX_PENDING_PER_SENDER,
       mempoolTtlMs:MEMPOOL_TTL_MS,
       contracts:this.contracts.size,
-      lockedValue:[...this.contracts.values()].filter((contract)=>["locked","vesting"].includes(contract.status)).reduce((sum,contract)=>sum+contract.amount-(contract.releasedAmount??0),0),
+      lockedValue:[...this.contracts.values()].filter((contract)=>["locked","vesting","milestone"].includes(contract.status)).reduce((sum,contract)=>sum+contract.amount-(contract.releasedAmount??0),0),
       market:this.getMarket(),
     };
   }
@@ -296,7 +308,7 @@ export class Ledger {
           } else if (tx.type === "contract_deploy") {
             assertAddress(tx.from); assertAddress(tx.beneficiary);
             assertInteger(tx.amount,"amount"); assertInteger(tx.fee,"fee"); assertInteger(tx.nonce,"nonce"); assertInteger(tx.unlockTime,"unlockTime");
-            if (!["timelock","vesting","hashlock"].includes(tx.contractType) || tx.amount<=0 || tx.fee<DEFAULT_FEE || tx.contractAddress!==`ect${tx.id.slice(0,38)}` || replayContracts.has(tx.contractAddress)) return false;
+            if (!["timelock","vesting","milestone","hashlock"].includes(tx.contractType) || tx.amount<=0 || tx.fee<DEFAULT_FEE || tx.contractAddress!==`ect${tx.id.slice(0,38)}` || replayContracts.has(tx.contractAddress)) return false;
             if (!validContractSchedule(tx,tx.timestamp)) return false;
             if (addressFromPublicJwk(tx.publicKey)!==tx.from || tx.id!==transactionId(tx)) return false;
             const key=createPublicKey({key:tx.publicKey,format:"jwk"});
@@ -308,9 +320,25 @@ export class Ledger {
             const treasury=replay.get(TREASURY_ADDRESS)??{balance:0,nonce:0};
             replay.set(TREASURY_ADDRESS,{...treasury,balance:treasury.balance+tx.fee});
             feesRecycled+=tx.fee;
+          } else if (tx.type === "contract_approve") {
+            const contract=replayContracts.get(tx.contractAddress);
+            if (!contract || contract.contractType!=="milestone" || contract.status!=="locked") return false;
+            assertAddress(tx.from); assertInteger(tx.fee,"fee"); assertInteger(tx.nonce,"nonce"); assertInteger(tx.milestone,"milestone");
+            if (tx.fee<DEFAULT_FEE || tx.milestone!==contract.approvalRound || ![contract.creator, contract.beneficiary].includes(tx.from)) return false;
+            if (tx.id!==transactionId(tx)) return false;
+            if (addressFromPublicJwk(tx.publicKey)!==tx.from) return false;
+            const key=createPublicKey({key:tx.publicKey,format:"jwk"});
+            if (!verifySignature(null,Buffer.from(canonicalContractApproval(tx)),key,Buffer.from(tx.signature,"base64url"))) return false;
+            const sender=replay.get(tx.from)??{balance:0,nonce:0};
+            if (tx.nonce!==sender.nonce+1 || sender.balance<tx.fee) return false;
+            replay.set(tx.from,{balance:sender.balance-tx.fee,nonce:tx.nonce});
+            const treasury=replay.get(TREASURY_ADDRESS)??{balance:0,nonce:0};
+            replay.set(TREASURY_ADDRESS,{...treasury,balance:treasury.balance+tx.fee});
+            feesRecycled+=tx.fee;
+            replayContracts.set(tx.contractAddress,applyContractApproval(contract,tx.from,tx.milestone,block.timestamp,block.height));
           } else if (tx.type === "contract_execute") {
             const contract=replayContracts.get(tx.contractAddress);
-            if (!contract || !["locked","vesting"].includes(contract.status) || block.timestamp<contract.unlockTime || tx.to!==contract.beneficiary || tx.id!==sha256(`execute:${tx.contractAddress}:${block.height}:${tx.installment}`)) return false;
+            if (!contract || !["locked","vesting","milestone"].includes(contract.status) || block.timestamp<contract.unlockTime || tx.to!==contract.beneficiary || tx.id!==sha256(`execute:${tx.contractAddress}:${block.height}:${tx.installment}`)) return false;
             const expected=nextContractRelease(contract,block.timestamp);
             if (!expected || tx.amount!==expected.amount || tx.installment!==expected.installment) return false;
             const recipient=replay.get(tx.to)??{balance:0,nonce:0};
@@ -348,27 +376,37 @@ export class Ledger {
       const projectedContracts=new Set(this.contracts.keys());
       const ids = new Set();
       for (const tx of this.pending) {
-        if (!['transfer','contract_deploy'].includes(tx.type) || ids.has(tx.id)) return false;
-        assertAddress(tx.from);
-        assertInteger(tx.amount,"amount"); assertInteger(tx.fee,"fee"); assertInteger(tx.nonce,"nonce");
-        if (tx.amount <= 0 || tx.fee < DEFAULT_FEE || addressFromPublicJwk(tx.publicKey) !== tx.from) return false;
-        const sender=projected.get(tx.from) ?? {balance:0,nonce:0};
-        if (tx.nonce !== sender.nonce+1 || sender.balance < tx.amount+tx.fee) return false;
-        const key=createPublicKey({key:tx.publicKey,format:"jwk"});
-        const payload=tx.type==="contract_deploy"?canonicalContractDeployment(tx):canonicalTransaction(tx);
-        if (!verifySignature(null,Buffer.from(payload),key,Buffer.from(tx.signature,"base64url"))) return false;
-        if (tx.id !== transactionId(tx)) return false;
-        projected.set(tx.from,{balance:sender.balance-tx.amount-tx.fee,nonce:tx.nonce});
-        if (tx.type==="transfer") {
-          assertAddress(tx.to); const recipient=projected.get(tx.to)??{balance:0,nonce:0}; projected.set(tx.to,{...recipient,balance:recipient.balance+tx.amount});
-        } else {
-          assertAddress(tx.beneficiary); assertInteger(tx.unlockTime,"unlockTime");
-          if (!["timelock","vesting","hashlock"].includes(tx.contractType) || tx.contractAddress!==`ect${tx.id.slice(0,38)}` || projectedContracts.has(tx.contractAddress)) return false;
-          if (!validContractSchedule(tx,tx.timestamp)) return false;
-          projectedContracts.add(tx.contractAddress);
+          if (!['transfer','contract_deploy','contract_approve'].includes(tx.type) || ids.has(tx.id)) return false;
+          assertAddress(tx.from);
+          assertInteger(tx.amount,"amount"); assertInteger(tx.fee,"fee"); assertInteger(tx.nonce,"nonce");
+          if (tx.type === "contract_approve") {
+            assertAddress(tx.contractAddress);
+            assertInteger(tx.milestone,"milestone");
+            if (tx.fee < DEFAULT_FEE || tx.amount !== 0 || addressFromPublicJwk(tx.publicKey) !== tx.from) return false;
+          } else if (tx.amount <= 0 || tx.fee < DEFAULT_FEE || addressFromPublicJwk(tx.publicKey) !== tx.from) return false;
+          const sender=projected.get(tx.from) ?? {balance:0,nonce:0};
+          if (tx.nonce !== sender.nonce+1 || sender.balance < tx.amount+tx.fee) return false;
+          const key=createPublicKey({key:tx.publicKey,format:"jwk"});
+          const payload=tx.type==="contract_deploy"?canonicalContractDeployment(tx):tx.type==="contract_approve"?canonicalContractApproval(tx):canonicalTransaction(tx);
+          if (!verifySignature(null,Buffer.from(payload),key,Buffer.from(tx.signature,"base64url"))) return false;
+          if (tx.id !== transactionId(tx)) return false;
+          projected.set(tx.from,{balance:sender.balance-tx.amount-tx.fee,nonce:tx.nonce});
+          if (tx.type==="transfer") {
+            assertAddress(tx.to); const recipient=projected.get(tx.to)??{balance:0,nonce:0}; projected.set(tx.to,{...recipient,balance:recipient.balance+tx.amount});
+          } else {
+            if (tx.type==="contract_deploy") {
+              assertAddress(tx.beneficiary); assertInteger(tx.unlockTime,"unlockTime");
+              if (!["timelock","vesting","milestone","hashlock"].includes(tx.contractType) || tx.contractAddress!==`ect${tx.id.slice(0,38)}` || projectedContracts.has(tx.contractAddress)) return false;
+              if (!validContractSchedule(tx,tx.timestamp)) return false;
+              projectedContracts.add(tx.contractAddress);
+            } else if (tx.type==="contract_approve") {
+              const contract=this.contracts.get(tx.contractAddress);
+              if (!contract || contract.contractType!=="milestone" || ![contract.creator, contract.beneficiary].includes(tx.from)) return false;
+              if (tx.milestone !== (contract.approvalRound ?? (contract.releasedInstallments ?? 0) + 1)) return false;
+            }
+          }
+          ids.add(tx.id);
         }
-        ids.add(tx.id);
-      }
       return true;
     } catch { return false; }
   }
@@ -446,10 +484,33 @@ export class Ledger {
     };
   }
 
-  getFeeQuote() {
-    const pressure=this.pending.length/100;
-    const standard=DEFAULT_FEE*(1+Math.min(4,Math.floor(pressure*4)));
-    return { economy:DEFAULT_FEE, standard, priority:Math.max(DEFAULT_FEE*2,standard*2), pressure, estimatedBlocks:Math.max(1,Math.ceil((this.pending.length+1)/this.getBlockCapacity())) };
+  getFeeQuote(blockIntervalMs=6_000) {
+    const capacity=this.getBlockCapacity();
+    const pendingFees=this.pending.map((tx)=>tx.fee).filter(Number.isSafeInteger).sort((a,b)=>a-b);
+    const recentFees=this.blocks.slice(-20).flatMap((block)=>block.transactions.map((tx)=>tx.fee).filter(Number.isSafeInteger)).sort((a,b)=>a-b);
+    const percentile=(values,ratio,fallback=DEFAULT_FEE)=>values.length?values[Math.min(values.length-1,Math.max(0,Math.floor((values.length-1)*ratio)))]:fallback;
+    const combined=[...pendingFees,...recentFees].sort((a,b)=>a-b);
+    const p25=percentile(combined,.25);
+    const p50=percentile(combined,.5);
+    const p75=percentile(combined,.75);
+    const economy=Math.max(DEFAULT_FEE,p25);
+    const standard=Math.max(DEFAULT_FEE,p50);
+    const priority=Math.max(DEFAULT_FEE*2,p75,Math.ceil(standard*1.25));
+    const averageBlockTimeMs=Math.max(1_000,Math.min(60_000,Math.round(Number(blockIntervalMs)||6_000)));
+    const tier=(fee)=>{
+      const queueAhead=this.pending.filter((tx)=>tx.fee>=fee).length;
+      const estimatedBlocks=Math.max(1,Math.ceil((queueAhead+1)/capacity));
+      const estimatedMs=estimatedBlocks*averageBlockTimeMs;
+      return {fee,queueAhead,estimatedBlocks,estimatedMs,expiryRisk:estimatedMs>=MEMPOOL_TTL_MS*.75};
+    };
+    const tiers={economy:tier(economy),standard:tier(standard),priority:tier(priority)};
+    const pendingMedian=percentile(pendingFees,.5,standard);
+    const recentMedian=percentile(recentFees,.5,standard);
+    const trend=pendingFees.length&&recentFees.length?(pendingMedian>recentMedian*1.2?"rising":pendingMedian<recentMedian*.8?"falling":"stable"):"stable";
+    const sampleSize=combined.length;
+    const confidence=sampleSize>=30?"high":sampleSize>=8?"medium":"low";
+    const pressure=Math.min(1,this.pending.length/Math.max(100,capacity));
+    return { economy,standard,priority,pressure,estimatedBlocks:tiers.standard.estimatedBlocks,averageBlockTimeMs,capacity,percentiles:{p25,p50,p75},trend,confidence,sampleSize,tiers };
   }
 
   getBlockCapacity() {
@@ -880,7 +941,7 @@ export class Ledger {
     const confirmed=this.transactionIndex.get(tx.id);
     if (confirmed) return {transaction:confirmed.transaction,block:confirmed.block,status:"confirmed",duplicate:true};
     if (this.contracts.has(tx.contractAddress)) throw new Error("Contract already exists");
-    const activeContracts=[...this.contracts.values()].filter((contract)=>contract.creator===tx.from&&["locked","vesting"].includes(contract.status)).length+this.pending.filter((pending)=>pending.type==="contract_deploy"&&pending.from===tx.from).length;
+    const activeContracts=[...this.contracts.values()].filter((contract)=>contract.creator===tx.from&&["locked","vesting","milestone"].includes(contract.status)).length+this.pending.filter((pending)=>pending.type==="contract_deploy"&&pending.from===tx.from).length;
     if (activeContracts>=MAX_ACTIVE_CONTRACTS_PER_CREATOR) throw new Error("Active contract limit reached for this creator");
     if (this.pending.length>=MAX_MEMPOOL_SIZE) throw new Error("Mempool is at capacity");
     if ((this.pendingBySender.get(tx.from)??[]).length>=MAX_PENDING_PER_SENDER) throw new Error("Sender pending-transaction limit reached");
@@ -920,7 +981,7 @@ export class Ledger {
   }
 
   executeMatureContracts(now=Date.now()) {
-    const mature=[...this.contracts.values()].filter((contract)=>contract.status==="locked"&&contract.contractType==="hashlock"?now>=contract.refundTime:["locked","vesting"].includes(contract.status)&&nextContractRelease(contract,now)).sort((a,b)=>(a.contractType==="hashlock"?a.refundTime:a.nextReleaseAt??a.unlockTime)-(b.contractType==="hashlock"?b.refundTime:b.nextReleaseAt??b.unlockTime)).slice(0,MAX_CONTRACT_EXECUTIONS_PER_BLOCK);
+    const mature=[...this.contracts.values()].filter((contract)=>contract.status==="locked"&&contract.contractType==="hashlock"?now>=contract.refundTime:["locked","vesting","milestone"].includes(contract.status)&&nextContractRelease(contract,now)).sort((a,b)=>(a.contractType==="hashlock"?a.refundTime:a.nextReleaseAt??a.unlockTime)-(b.contractType==="hashlock"?b.refundTime:b.nextReleaseAt??b.unlockTime)).slice(0,MAX_CONTRACT_EXECUTIONS_PER_BLOCK);
     if (!mature.length) return null;
     const height=this.blocks.length;
     const transactions=[];
@@ -938,6 +999,34 @@ export class Ledger {
       transactions.push({id:sha256(`execute:${contract.address}:${height}:${release.installment}`),type:"contract_execute",contractAddress:contract.address,to:contract.beneficiary,amount:release.amount,installment:release.installment,timestamp:now});
     }
     return this.#sealBlock(transactions,now);
+  }
+
+  approveMilestoneContract(input) {
+    const tx={contractAddress:input?.contractAddress,from:input?.from,milestone:Number(input?.milestone),fee:Number(input?.fee),nonce:Number(input?.nonce),timestamp:Number(input?.timestamp),publicKey:input?.publicKey,signature:input?.signature};
+    if (typeof tx.contractAddress !== "string" || !/^ect[0-9a-f]{38}$/.test(tx.contractAddress)) throw new Error("Invalid contract address");
+    assertAddress(tx.from); assertInteger(tx.milestone,"milestone"); assertInteger(tx.fee,"fee"); assertInteger(tx.nonce,"nonce"); assertInteger(tx.timestamp,"timestamp");
+    if (tx.fee<DEFAULT_FEE) throw new Error(`Minimum fee is ${DEFAULT_FEE} µEC`);
+    if (Math.abs(Date.now()-tx.timestamp)>5*60_000) throw new Error("Milestone approval timestamp is outside the five-minute window");
+    const contract=this.getContract(tx.contractAddress);
+    if (contract.contractType!=="milestone" || contract.status!=="locked") throw new Error("Milestone contract is not ready for approval");
+    if (![contract.creator, contract.beneficiary].includes(tx.from)) throw new Error("Only the creator or beneficiary can approve this milestone");
+    const milestone=contract.approvalRound ?? (contract.releasedInstallments ?? 0) + 1;
+    if (tx.milestone!==milestone) throw new Error("Approval is for the wrong milestone");
+    if (tx.id && tx.id!==sha256(`approve:${tx.contractAddress}:${tx.from}:${tx.milestone}`)) throw new Error("Approval id is invalid");
+    if (!tx.publicKey || addressFromPublicJwk(tx.publicKey)!==tx.from) throw new Error("Public key does not match approver address");
+    const key=createPublicKey({key:tx.publicKey,format:"jwk"});
+    if (!verifySignature(null,Buffer.from(canonicalContractApproval(tx)),key,Buffer.from(tx.signature,"base64url"))) throw new Error("Invalid contract approval signature");
+    const sender=this.getAccount(tx.from);
+    if (tx.nonce!==sender.nonce+1 || sender.balance<tx.fee) throw new Error("Insufficient available balance");
+    tx.id=sha256(`${canonicalContractApproval(tx)}:${tx.signature}`); tx.type="contract_approve"; tx.to=tx.contractAddress;
+    const updatedContract = applyContractApproval(contract, tx.from, milestone, tx.timestamp, this.blocks.length);
+    this.accounts.set(tx.from,{balance:sender.balance-tx.fee,nonce:tx.nonce});
+    const treasury=this.getAccount(TREASURY_ADDRESS);
+    this.accounts.set(TREASURY_ADDRESS,{...treasury,balance:treasury.balance+tx.fee});
+    this.feesRecycled += tx.fee;
+    this.contracts.set(tx.contractAddress, updatedContract);
+    const block = this.#sealBlock([tx], tx.timestamp);
+    return { transaction: tx, block };
   }
 
   claimHashlock(address,secret,now=Date.now()) {
@@ -1068,15 +1157,15 @@ function normalizeTransaction(input) {
 function normalizeContractDeployment(input) {
   const tx={contractType:input?.contractType??"timelock",from:input?.from,beneficiary:input?.beneficiary,amount:Number(input?.amount),fee:Number(input?.fee),nonce:Number(input?.nonce),unlockTime:Number(input?.unlockTime),installments:Number(input?.installments??1),intervalMs:Number(input?.intervalMs??0),secretHash:input?.secretHash??"",refundTime:Number(input?.refundTime??0),memo:input?.memo??"",timestamp:Number(input?.timestamp),publicKey:input?.publicKey,signature:input?.signature};
   for (const [name,value] of [["amount",tx.amount],["fee",tx.fee],["nonce",tx.nonce],["unlockTime",tx.unlockTime],["installments",tx.installments],["intervalMs",tx.intervalMs],["refundTime",tx.refundTime],["timestamp",tx.timestamp]]) assertInteger(value,name);
-  if (!["timelock","vesting","hashlock"].includes(tx.contractType)) throw new Error("Unsupported contract template");
+  if (!["timelock","vesting","milestone","hashlock"].includes(tx.contractType)) throw new Error("Unsupported contract template");
   if (tx.amount<=0) throw new Error("Contract amount must be positive");
   if (tx.fee<DEFAULT_FEE) throw new Error(`Minimum fee is ${DEFAULT_FEE} µEC`);
   if (tx.nonce<=0) throw new Error("Nonce must be positive");
   if (Math.abs(Date.now()-tx.timestamp)>5*60_000) throw new Error("Contract timestamp is outside the five-minute window");
   if (tx.contractType!=="hashlock" && (tx.unlockTime<Date.now()+5_000 || tx.unlockTime>Date.now()+365*24*60*60_000)) throw new Error("Unlock time must be between five seconds and one year from now");
   if (tx.contractType==="timelock" && (tx.installments!==1 || tx.intervalMs!==0)) throw new Error("Timelocks use one release");
-  if (tx.contractType==="vesting" && (tx.installments<2 || tx.installments>52 || tx.intervalMs<60_000 || tx.intervalMs>90*24*60*60_000)) throw new Error("Vesting requires 2-52 installments spaced between one minute and 90 days");
-  if (tx.contractType==="vesting" && tx.unlockTime+(tx.installments-1)*tx.intervalMs>Date.now()+2*365*24*60*60_000) throw new Error("Vesting schedule cannot extend beyond two years");
+  if (["vesting","milestone"].includes(tx.contractType) && (tx.installments<2 || tx.installments>52 || tx.intervalMs<60_000 || tx.intervalMs>90*24*60*60_000)) throw new Error(`${tx.contractType === "milestone" ? "Milestone" : "Vesting"} requires 2-52 installments spaced between one minute and 90 days`);
+  if (["vesting","milestone"].includes(tx.contractType) && tx.unlockTime+(tx.installments-1)*tx.intervalMs>Date.now()+2*365*24*60*60_000) throw new Error(`${tx.contractType === "milestone" ? "Milestone" : "Vesting"} schedule cannot extend beyond two years`);
   if (tx.contractType==="hashlock" && (tx.installments!==1 || tx.intervalMs!==0 || !/^[0-9a-f]{64}$/.test(tx.secretHash) || tx.refundTime<Date.now()+60_000 || tx.refundTime>Date.now()+30*24*60*60_000)) throw new Error("Hashlocks require a SHA-256 secret hash and a refund deadline between one minute and 30 days");
   if (typeof tx.memo!=="string" || tx.memo.length>MAX_MEMO_LENGTH) throw new Error(`Memo cannot exceed ${MAX_MEMO_LENGTH} characters`);
   if (typeof tx.signature!=="string" || !tx.signature) throw new Error("Signature is required");
@@ -1084,12 +1173,12 @@ function normalizeContractDeployment(input) {
 }
 
 function contractFromDeployment(tx,createdAt,createdHeight) {
-  return {address:tx.contractAddress,contractType:tx.contractType,creator:tx.from,beneficiary:tx.beneficiary,amount:tx.amount,unlockTime:tx.unlockTime,installments:tx.installments??1,intervalMs:tx.intervalMs??0,secretHash:tx.secretHash??"",refundTime:tx.refundTime??0,releasedInstallments:0,releasedAmount:0,status:"locked",memo:tx.memo,createdAt,createdHeight};
+  return {address:tx.contractAddress,contractType:tx.contractType,creator:tx.from,beneficiary:tx.beneficiary,amount:tx.amount,unlockTime:tx.unlockTime,installments:tx.installments??1,intervalMs:tx.intervalMs??0,secretHash:tx.secretHash??"",refundTime:tx.refundTime??0,releasedInstallments:0,releasedAmount:0,status:"locked",memo:tx.memo,createdAt,createdHeight,approvalRound:1,creatorApprovedRound:0,beneficiaryApprovedRound:0};
 }
 
 function validContractSchedule(tx,referenceTime) {
   if (tx.contractType==="timelock") return tx.installments===1&&tx.intervalMs===0&&tx.unlockTime>=referenceTime+5_000&&tx.unlockTime<=referenceTime+365*24*60*60_000;
-  if (tx.contractType==="vesting") return tx.installments>=2&&tx.installments<=52&&tx.intervalMs>=60_000&&tx.intervalMs<=90*24*60*60_000&&tx.unlockTime>=referenceTime+5_000&&tx.unlockTime+(tx.installments-1)*tx.intervalMs<=referenceTime+2*365*24*60*60_000;
+  if (tx.contractType==="vesting" || tx.contractType==="milestone") return tx.installments>=2&&tx.installments<=52&&tx.intervalMs>=60_000&&tx.intervalMs<=90*24*60*60_000&&tx.unlockTime>=referenceTime+5_000&&tx.unlockTime+(tx.installments-1)*tx.intervalMs<=referenceTime+2*365*24*60*60_000;
   if (tx.contractType==="hashlock") return tx.installments===1&&tx.intervalMs===0&&/^[0-9a-f]{64}$/.test(tx.secretHash??"")&&tx.refundTime>=referenceTime+60_000&&tx.refundTime<=referenceTime+30*24*60*60_000;
   return false;
 }
@@ -1101,6 +1190,10 @@ function nextContractRelease(contract,now) {
   if (released>=installments) return null;
   const dueAt=contract.unlockTime+released*(contract.intervalMs??0);
   if (now<dueAt) return null;
+  if (contract.contractType==="milestone") {
+    const round=released+1;
+    if ((contract.creatorApprovedRound??0)!==round || (contract.beneficiaryApprovedRound??0)!==round) return null;
+  }
   const remaining=contract.amount-(contract.releasedAmount??0);
   const amount=released===installments-1 ? remaining : Math.floor(contract.amount/installments);
   return {amount,installment:released+1,dueAt};
@@ -1110,7 +1203,20 @@ function applyContractRelease(contract,release,releasedAt,releaseHeight) {
   const releasedAmount=(contract.releasedAmount??0)+release.amount;
   const releasedInstallments=release.installment;
   const complete=releasedInstallments>=(contract.installments??1);
-  return {...contract,releasedAmount,releasedInstallments,status:complete?"released":"vesting",releasedAt,releaseHeight,nextReleaseAt:complete?null:contract.unlockTime+releasedInstallments*(contract.intervalMs??0)};
+  return {...contract,releasedAmount,releasedInstallments,status:complete?"released":contract.contractType,releasedAt,releaseHeight,nextReleaseAt:complete?null:contract.unlockTime+releasedInstallments*(contract.intervalMs??0),approvalRound:complete?0:releasedInstallments+1,creatorApprovedRound:0,beneficiaryApprovedRound:0};
+}
+
+function applyContractApproval(contract,approver,milestone,releasedAt,releaseHeight) {
+  const approvalRound=contract.approvalRound ?? (contract.releasedInstallments ?? 0) + 1;
+  const updated = {
+    ...contract,
+    approvalRound,
+    creatorApprovedRound: contract.creatorApprovedRound ?? 0,
+    beneficiaryApprovedRound: contract.beneficiaryApprovedRound ?? 0,
+  };
+  if (approver === contract.creator) updated.creatorApprovedRound = milestone;
+  if (approver === contract.beneficiary) updated.beneficiaryApprovedRound = milestone;
+  return { ...updated, approvedAt: releasedAt, approvedHeight: releaseHeight };
 }
 
 function assertInteger(value, name) {

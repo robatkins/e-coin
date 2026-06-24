@@ -62,7 +62,7 @@ async function handleApi(request, response, url) {
     response.setHeader("Cache-Control","no-store"); return sendJson(response,200,treasuryWallet);
   }
   if (request.method === "GET" && url.pathname === "/api/mempool") return sendJson(response, 200, { size:ledger.pending.length, transactions:ledger.pending });
-  if (request.method === "GET" && url.pathname === "/api/fees") return sendJson(response, 200, ledger.getFeeQuote());
+  if (request.method === "GET" && url.pathname === "/api/fees") return sendJson(response, 200, ledger.getFeeQuote(blockIntervalMs));
   if (request.method === "GET" && url.pathname === "/api/market") {
     const address = url.searchParams.get("address") || undefined;
     return sendJson(response,200,{ ...ledger.getMarket(), yourOrders: address ? ledger.listMarketOrders(address).filter((order)=>order.status==="open" || order.status==="partial") : [] });
@@ -156,6 +156,11 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && /^\/api\/contracts\/[^/]+\/claim$/.test(url.pathname)) {
     const address=decodeURIComponent(url.pathname.slice("/api/contracts/".length,-"/claim".length)); const body=await readBody(request);
     const result=ledger.claimHashlock(address,body.secret); await persist(); broadcast("block",{height:result.block.height,hash:result.block.hash,transactions:1,reason:"hashlock_claim"});
+    return sendJson(response,201,result);
+  }
+  if (request.method === "POST" && /^\/api\/contracts\/[^/]+\/approve$/.test(url.pathname)) {
+    const address=decodeURIComponent(url.pathname.slice("/api/contracts/".length,-"/approve".length)); const body=await readBody(request);
+    const result=ledger.approveMilestoneContract({ ...body, contractAddress: address }); await persist(); broadcast("block",{height:result.block.height,hash:result.block.hash,transactions:1,reason:"milestone_approval"});
     return sendJson(response,201,result);
   }
   sendJson(response, 404, { error: "API route not found" });

@@ -113,6 +113,26 @@
           </div>
           <p id="session-security-guidance" class="microcopy">Enable the encrypted vault to use automatic session locking.</p>
         </div>
+        <div class="security-center" id="security-center">
+          <div class="section-title compact"><div><p class="eyebrow">SECURITY CENTER</p><h2>Posture and recovery</h2></div><small id="security-grade">ANALYZING</small></div>
+          <div class="security-metrics">
+            <div><span>POSTURE</span><b id="security-score">â€”</b><small id="security-summary">Evaluating the wallet.</small></div>
+            <div><span>SESSION</span><b id="security-session-state">â€”</b><small id="security-session-note">Vault and timer status.</small></div>
+            <div><span>LAST BACKUP</span><b id="security-backup-state">â€”</b><small id="security-backup-note">Recovery freshness.</small></div>
+            <div><span>EVENTS</span><b id="security-event-state">â€”</b><small id="security-event-note">Local security log.</small></div>
+          </div>
+          <div class="security-actions">
+            <button class="button ghost" id="security-drill" type="button">RUN RECOVERY DRILL</button>
+            <button class="button ghost" id="security-export" type="button">EXPORT REPORT</button>
+          </div>
+          <div class="security-outlook">
+            <div><span>ATTACK SURFACE</span><b id="security-attack-surface">—</b><small id="security-attack-note">Loading risk vectors.</small></div>
+            <div><span>NEAR-TERM RISK</span><b id="security-near-term-risk">—</b><small id="security-near-term-note">Will summarize active exposure.</small></div>
+            <div><span>NEXT ACTION</span><b id="security-next-action">—</b><small id="security-next-action-note">A recommended hardening step.</small></div>
+          </div>
+          <div id="security-recommendations" class="security-recommendations"><p class="empty">No security recommendations yet.</p></div>
+          <div id="security-timeline" class="security-timeline"><p class="empty">No wallet security events yet.</p></div>
+        </div>
         <div class="wallet-actions">
           <button class="button primary" id="faucet">GET 25 TEST EC</button>
           <button class="button ghost" id="open-buy" type="button">BUY WITH USD</button>
@@ -152,6 +172,24 @@
             </div>
             <div id="guard-signals" class="guard-signals"><div class="signal">Fill a transfer to see its safety signals.</div></div>
           </div>
+          <details class="offline-signing-panel">
+            <summary><span><b>OFFLINE SIGNING CENTER</b><small>Portable JSON workflow for separated signing and broadcast</small></span><i>EXPAND</i></summary>
+            <div class="offline-signing-body">
+              <div class="offline-steps">
+                <div><span>01</span><b>EXPORT</b><small>Create a short-lived unsigned transfer.</small></div>
+                <div><span>02</span><b>SIGN</b><small>Open it with the wallet that owns the key.</small></div>
+                <div><span>03</span><b>BROADCAST</b><small>Return the signed envelope to an online node.</small></div>
+              </div>
+              <div class="offline-status"><div><span>WORKFLOW STATUS</span><b id="offline-signing-status">READY FOR A DRAFT</b></div><code id="offline-signing-fingerprint">NO ENVELOPE LOADED</code></div>
+              <p id="offline-signing-guidance">Fill a recipient and amount above, then export an unsigned transaction. No private key is included.</p>
+              <div class="offline-actions">
+                <button class="button ghost" id="offline-export-draft" type="button">EXPORT UNSIGNED</button>
+                <label class="button ghost" for="offline-import-draft">IMPORT &amp; SIGN</label><input id="offline-import-draft" type="file" accept="application/json" hidden>
+                <label class="button primary" for="offline-import-signed">IMPORT &amp; BROADCAST</label><input id="offline-import-signed" type="file" accept="application/json" hidden>
+              </div>
+              <div class="offline-warning">Verify the fingerprint and transaction details on both devices. Signed envelopes authorize an irreversible transfer until they expire.</div>
+            </div>
+          </details>
           <div class="batch-panel">
             <div class="section-title compact"><div><p class="eyebrow">BATCH PAYMENTS</p><h2>Sign many transfers together</h2></div><small>2–32 RECIPIENTS</small></div>
             <p class="microcopy">One transfer per line: <code>address or contact name, amount, memo</code>. Every payment receives its own signature and consecutive nonce; the node accepts the complete batch or none of it.</p>
@@ -253,9 +291,11 @@
         <div class="intel-summary">
           <span>AI-LIKE RECOMMENDATION</span>
           <p id="data-recommendation">The system will summarize current pressure, trend, and treasury state here.</p>
+          <div class="data-actions-head"><span>NEXT BEST ACTIONS</span><small>Auto-ranked from live signals</small></div>
+          <div id="data-actions" class="data-actions"><p class="empty">Action guidance will appear here.</p></div>
         </div>
       </div>
-      <div class="portfolio-panel">
+      <div class="portfolio-panel" id="portfolio-panel">
         <div class="section-title"><div><p class="eyebrow">LOCAL PORTFOLIO</p><h2>All wallets, one view</h2></div><button class="button ghost" id="refresh-portfolio" type="button">REFRESH PORTFOLIO</button></div>
         <div class="portfolio-metrics">
           <div><span>TOTAL HOLDINGS</span><b id="portfolio-total">—</b><small id="portfolio-usd">—</small></div>
@@ -263,16 +303,124 @@
           <div><span>CONCENTRATION</span><b id="portfolio-concentration">—</b><small id="portfolio-diversity">—</small></div>
           <div><span>PORTFOLIO HEALTH</span><b id="portfolio-health">ANALYZING</b><small id="portfolio-health-note">Loading local accounts.</small></div>
         </div>
+        <div class="portfolio-outlook">
+          <div class="portfolio-outlook-head">
+            <span>ALLOCATION OUTLOOK</span>
+            <small id="portfolio-outlook-note">Waiting for the portfolio model.</small>
+          </div>
+          <div class="portfolio-outlook-grid">
+            <div><span>RISK BAND</span><b id="portfolio-risk-band">—</b><small id="portfolio-risk-band-note">Concentration and liquidity outlook.</small></div>
+            <div><span>LIQUIDITY</span><b id="portfolio-liquidity-band">—</b><small id="portfolio-liquidity-note">How much of the portfolio is ready now.</small></div>
+            <div><span>NEXT MOVE</span><b id="portfolio-next-move">—</b><small id="portfolio-next-move-note">A recommended portfolio action.</small></div>
+          </div>
+        </div>
         <div class="portfolio-allocation" aria-label="Wallet allocation chart"><div id="portfolio-allocation-bar"></div></div>
         <p id="portfolio-guidance" class="search-summary">Portfolio intelligence compares every wallet stored in this browser.</p>
         <div id="portfolio-list" class="portfolio-list"><p class="empty">Loading local wallets…</p></div>
       </div>
-      <div class="activity-panel">
+      <div class="subwallet-panel" id="subwallet-panel">
         <div class="section-title">
-          <div><p class="eyebrow">ACTIVITY CENTER</p><h2>Statement and anomaly review</h2></div>
+          <div><p class="eyebrow">SUBWALLET INTELLIGENCE</p><h2>Analyze wallet hierarchies</h2></div>
+          <small>ROLLUP + ROUTING</small>
+        </div>
+        <div class="subwallet-metrics">
+          <div><span>ROOTS</span><b id="subwallet-roots">—</b><small id="subwallet-roots-note">Loading hierarchy.</small></div>
+          <div><span>SUBWALLETS</span><b id="subwallet-children">—</b><small id="subwallet-children-note">Children visible in the manager.</small></div>
+          <div><span>ROLLUP SHARE</span><b id="subwallet-share">—</b><small id="subwallet-share-note">Share of total holdings controlled by the largest tree.</small></div>
+          <div><span>LINEAGE HEALTH</span><b id="subwallet-health">ANALYZING</b><small id="subwallet-health-note">Waiting for portfolio data.</small></div>
+        </div>
+        <div class="subwallet-summary">
+          <p id="subwallet-summary">Subwallet analytics will summarize how value is distributed across roots and descendants.</p>
+          <small id="subwallet-next-action">Create subwallets for teams, budgets, or staged reserves.</small>
+        </div>
+        <div class="subwallet-allocator">
+          <div class="subwallet-allocator-head">
+            <span>BRANCH TOP-UP PLANNER</span>
+            <small id="subwallet-allocator-summary">Scanning for child wallets that should be replenished.</small>
+          </div>
+          <div id="subwallet-allocator-list" class="subwallet-allocator-list"><p class="empty">No top-up suggestions yet.</p></div>
+        </div>
+        <div class="subwallet-chart-panel">
+          <div class="subwallet-chart-head">
+            <span>BRANCH RUNWAY</span>
+            <small id="subwallet-chart-summary">Projected operating runway by wallet branch.</small>
+          </div>
+          <svg id="subwallet-chart" viewBox="0 0 760 220" role="img" aria-label="Subwallet branch runway chart">
+            <g class="chart-gridlines"></g>
+            <path class="area" d=""></path>
+            <polyline points=""></polyline>
+          </svg>
+        </div>
+        <div class="subwallet-trend-panel">
+          <div class="subwallet-trend-head">
+            <span>SPENDING TREND</span>
+            <small id="subwallet-trend-summary">Branch outflow trend over the last 14 days.</small>
+          </div>
+          <div id="subwallet-trend-list" class="subwallet-trend-list"><p class="empty">No branch trend data yet.</p></div>
+        </div>
+      </div>
+      <div class="rebalance-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">PORTFOLIO REBALANCER</p><h2>Plan safer internal allocation</h2></div>
+          <small>MINIMUM-MOVE OPTIMIZER</small>
+        </div>
+        <div class="rebalance-controls">
+          <label><span>STRATEGY</span><select id="rebalance-strategy"><option value="equal">EQUAL WEIGHT</option><option value="floor">RESERVE FLOOR</option></select></label>
+          <label><span>RESERVE FLOOR</span><input id="rebalance-floor" type="number" min="0" step="0.000001" value="25"><small>EC</small></label>
+          <label><span>SOURCE BUFFER</span><input id="rebalance-buffer" type="number" min="0" step="0.000001" value="5"><small>EC</small></label>
+          <label><span>MINIMUM MOVE</span><input id="rebalance-minimum" type="number" min="0.000001" step="0.000001" value="0.01"><small>EC</small></label>
+          <label class="rebalance-toggle"><input id="rebalance-treasury" type="checkbox"><span>INCLUDE GENESIS TREASURY</span></label>
+        </div>
+        <div class="rebalance-metrics">
+          <div><span>TRANSFERS</span><b id="rebalance-count">0</b><small id="rebalance-fees">0.000000 EC fees</small></div>
+          <div><span>VALUE MOVED</span><b id="rebalance-volume">0.000000 EC</b><small id="rebalance-wallet-count">0 wallets modeled</small></div>
+          <div><span>LARGEST SHARE</span><b id="rebalance-before">—</b><small id="rebalance-after">— after plan</small></div>
+          <div><span>PLAN STATUS</span><b id="rebalance-status">WAITING</b><small>Every transfer still requires review</small></div>
+        </div>
+        <p id="rebalance-guidance" class="search-summary">Refresh the portfolio to generate an allocation plan.</p>
+        <div id="rebalance-list" class="rebalance-list"><p class="empty">No rebalancing moves proposed.</p></div>
+        <div class="rebalance-actions"><button class="button ghost" id="rebalance-copy" type="button" disabled>COPY PLAN</button><button class="button primary" id="rebalance-load-next" type="button" disabled>LOAD NEXT TRANSFER</button></div>
+      </div>
+      <div class="stress-lab-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">LIQUIDITY STRESS LAB</p><h2>Forecast wallet resilience</h2></div>
+          <small>LOCAL SCENARIO MODEL</small>
+        </div>
+        <div class="stress-controls">
+          <label><span>FORECAST HORIZON</span><select id="stress-horizon"><option value="7">7 DAYS</option><option value="30" selected>30 DAYS</option><option value="90">90 DAYS</option><option value="180">180 DAYS</option></select></label>
+          <label><span>EC/USD SHOCK</span><input id="stress-price-shock" type="number" min="-95" max="300" step="5" value="-35"><small>%</small></label>
+          <label><span>EXTRA OUTFLOW</span><input id="stress-extra-spend" type="number" min="0" step="0.000001" value="0"><small>EC</small></label>
+          <label class="stress-toggle"><input id="stress-use-history" type="checkbox" checked><span>INCLUDE RECENT SPENDING PACE</span></label>
+        </div>
+        <div class="stress-metrics">
+          <div><span>PROJECTED LIQUID</span><b id="stress-projected">—</b><small id="stress-projected-usd">—</small></div>
+          <div><span>COMMITMENTS</span><b id="stress-commitments">—</b><small id="stress-commitment-count">—</small></div>
+          <div><span>COVERAGE</span><b id="stress-coverage">—</b><small id="stress-runway">—</small></div>
+          <div><span>RESILIENCE</span><b id="stress-score">—</b><small id="stress-grade">ANALYZING</small></div>
+        </div>
+        <svg id="stress-chart" class="stress-chart" viewBox="0 0 760 220" role="img" aria-label="Projected wallet liquidity"><g class="chart-gridlines"></g><path class="area" d=""></path><polyline points=""></polyline><g class="stress-markers"></g></svg>
+        <div class="stress-footer">
+          <p id="stress-guidance">Choose a scenario to forecast payment-plan obligations, contract inflows, fees, and recent spending behavior.</p>
+          <button class="button ghost" id="stress-apply-reserve" type="button">APPLY RECOMMENDED RESERVE</button>
+        </div>
+        <div id="stress-findings" class="stress-findings"><p class="empty">Waiting for wallet and market data.</p></div>
+      </div>
+      <div class="activity-panel" id="activity-panel">
+        <div class="section-title">
+          <div class="activity-heading-copy"><p class="eyebrow">ACTIVITY CENTER</p><h2>Statement and anomaly review</h2><p>Follow money movement, narrow the statement window, and surface behavior that deserves attention.</p></div>
           <div class="activity-tools">
-            <button class="button ghost" id="export-activity-csv" type="button">EXPORT CSV</button>
-            <button class="button ghost" id="export-activity-json" type="button">EXPORT JSON</button>
+            <div class="activity-filter-row">
+              <select id="activity-filter" aria-label="Activity filter">
+                <option value="all">ALL ACTIVITY</option>
+                <option value="incoming">INCOMING</option>
+                <option value="outgoing">OUTGOING</option>
+                <option value="contract">CONTRACTS</option>
+              </select>
+              <input id="activity-search" type="search" placeholder="Search address, memo, or transaction" autocomplete="off">
+              <input id="activity-from" type="date" aria-label="Activity from date">
+              <input id="activity-to" type="date" aria-label="Activity to date">
+            </div>
+            <div class="activity-export-row"><span>EXPORT CURRENT VIEW</span><button class="button ghost" id="export-activity-csv" type="button">CSV</button><button class="button ghost" id="export-activity-json" type="button">JSON</button></div>
           </div>
         </div>
         <div class="activity-metrics">
@@ -284,11 +432,58 @@
           <div><span>COUNTERPARTIES</span><b id="activity-counterparties">—</b></div>
         </div>
         <div class="activity-summary">
-          <span>STATEMENT WINDOW</span>
-          <p id="activity-summary">Loading activity…</p>
+          <div class="activity-summary-head"><div><span>STATEMENT WINDOW</span><p id="activity-summary">Loading activity…</p></div><small id="activity-window">No history yet</small></div>
           <small id="activity-note">The ledger feed will populate once the wallet activity index is available.</small>
+          <small id="activity-trend" class="activity-summary-trend">Trend analysis pending.</small>
+          <div class="activity-forecast">
+            <div><span>7-DAY OUTFLOW</span><b id="activity-forecast-outflow">—</b><small id="activity-forecast-outflow-note">Projected from recent sends.</small></div>
+            <div><span>7-DAY BALANCE</span><b id="activity-forecast-balance">—</b><small id="activity-forecast-balance-note">Modeled against the current liquid balance.</small></div>
+            <div><span>PRESSURE</span><b id="activity-forecast-pressure">—</b><small id="activity-forecast-pressure-note">Forward-looking wallet pressure.</small></div>
+          </div>
         </div>
+        <div class="activity-intelligence">
+          <div class="section-title compact">
+            <div><p class="eyebrow">ACTIVITY INTELLIGENCE</p><h3>Local rules and signals</h3><p>Private, wallet-specific monitoring that runs entirely in this browser.</p></div>
+            <button class="button ghost" id="activity-intel-seed" type="button">SEED FROM COUNTERPARTIES</button>
+          </div>
+          <div class="activity-intel-grid">
+            <div class="activity-rule-card">
+              <div class="activity-card-head"><span>DETECTION POLICY</span><small>Changes save automatically</small></div>
+              <div class="activity-rules">
+                <label><span>LARGE TRANSFER</span><div><input id="activity-rule-large-transfer" type="number" min="0.1" step="0.1" value="10"><small>EC</small></div></label>
+                <label><span>BURST COUNT</span><div><input id="activity-rule-burst-count" type="number" min="2" step="1" value="4"><small>TX</small></div></label>
+                <label><span>BURST WINDOW</span><div><input id="activity-rule-burst-window" type="number" min="1" max="168" step="1" value="24"><small>HRS</small></div></label>
+                <label class="activity-rule-toggle"><input id="activity-rule-watch-new" type="checkbox" checked><span><b>New counterparties</b><small>Flag first-seen relationships</small></span></label>
+                <label class="activity-rule-toggle"><input id="activity-rule-watch-top" type="checkbox" checked><span><b>Top counterparties</b><small>Watch concentrated relationships</small></span></label>
+              </div>
+            </div>
+            <div class="activity-signal-card">
+              <div class="activity-card-head"><span>SIGNAL QUEUE</span><small>Prioritized by the local rule engine</small></div>
+              <div class="activity-intel-meta"><p id="activity-intel-summary">Rule engine idle.</p><div id="activity-intel-top" class="activity-intel-top"></div></div>
+              <div id="activity-intel-list" class="activity-intel-list"><p class="empty">No signals yet.</p></div>
+            </div>
+          </div>
+        </div>
+        <div class="activity-list-head"><div><span>LEDGER ACTIVITY</span><b>Recent confirmed events</b></div><small>Newest first</small></div>
         <div id="activity-list" class="activity-list"><p class="empty">No confirmed activity yet.</p></div>
+      </div>
+      <div class="counterparty-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">COUNTERPARTY INTELLIGENCE</p><h2>Rank relationships by risk and trust</h2></div>
+          <small>LOCAL SCORECARD</small>
+        </div>
+        <div class="relationship-panel">
+          <div class="relationship-head">
+            <p id="relationship-summary">No relationship graph yet.</p>
+            <small>Wallet-centered map of your most active counterparties.</small>
+          </div>
+          <svg id="relationship-map" class="relationship-map" viewBox="0 0 760 360" role="img" aria-label="Counterparty relationship map"><rect x="0" y="0" width="760" height="360" fill="#0b0f0d"></rect></svg>
+        </div>
+        <div class="counterparty-summary">
+          <p id="counterparty-summary">No counterparties analyzed yet.</p>
+          <div id="counterparty-top" class="counterparty-top"></div>
+        </div>
+        <div id="counterparty-list" class="counterparty-list"><p class="empty">No counterparties yet.</p></div>
       </div>
       <div class="data-explorer">
         <div class="section-title"><div><p class="eyebrow">LEDGER EXPLORER</p><h2>Search the chain</h2></div><small>BLOCKS, TRANSACTIONS, ACCOUNTS, CONTRACTS</small></div>
@@ -308,6 +503,17 @@
         </form>
         <div id="watchlist-summary" class="search-summary">Add addresses you want to track across the ledger.</div>
         <div id="watchlist-alerts" class="watchlist-alerts"></div>
+        <div class="watchlist-outlook">
+          <div class="watchlist-outlook-head">
+            <span>WATCHLIST OUTLOOK</span>
+            <small id="watchlist-outlook-note">Waiting for watchlist intelligence.</small>
+          </div>
+          <div class="watchlist-outlook-grid">
+            <div><span>RISK BAND</span><b id="watchlist-risk-band">—</b><small id="watchlist-risk-note">Risk across watched peers.</small></div>
+            <div><span>MOVEMENT</span><b id="watchlist-movement-band">—</b><small id="watchlist-movement-note">Balance changes since the last snapshot.</small></div>
+            <div><span>NEXT STEP</span><b id="watchlist-next-step">—</b><small id="watchlist-next-step-note">A useful follow-up action.</small></div>
+          </div>
+        </div>
         <div id="watchlist-list" class="watchlist-list"><p class="empty">No watched addresses yet.</p></div>
       </div>
       <div class="alerts-panel">
@@ -327,7 +533,7 @@
         <div id="market-alert-summary" class="search-summary">Create a trigger for the current market quote.</div>
         <div id="market-alert-list" class="alerts-list"><p class="empty">No market alerts yet.</p></div>
       </div>
-      <div class="orderbook-panel">
+      <div class="orderbook-panel" id="orderbook-panel">
         <div class="section-title"><div><p class="eyebrow">ORDER BOOK</p><h2>Buy and sell with USD quotes</h2></div><small>SIMULATED USD</small></div>
         <div class="orderbook-hero">
           <div><span>BEST BID</span><b id="best-bid">—</b></div>
@@ -342,6 +548,34 @@
           <button class="button primary" id="place-order" type="submit">PLACE ORDER</button>
           <button class="button ghost" id="market-quote-fill" type="button">FILL WITH MID</button>
         </form>
+        <div class="order-assistant">
+          <div class="section-title compact">
+            <div><p class="eyebrow">SMART ORDER ASSISTANT</p><h3>Choose a cleaner entry</h3><p>Prefills your selected side using spread, depth, and your available balance.</p></div>
+            <small id="order-assistant-mode">READY</small>
+          </div>
+          <div class="order-assistant-grid">
+            <div><span>TACTIC</span><b id="order-assistant-tactic">—</b><small id="order-assistant-tactic-note">Awaiting market telemetry.</small></div>
+            <div><span>RECOMMENDED PRICE</span><b id="order-assistant-price">—</b><small id="order-assistant-price-note">Will update with the current book.</small></div>
+            <div><span>RECOMMENDED SIZE</span><b id="order-assistant-size">—</b><small id="order-assistant-size-note">Uses wallet balance when relevant.</small></div>
+            <div><span>FILL CONFIDENCE</span><b id="order-assistant-fill">—</b><small id="order-assistant-fill-note">Higher when the spread is tighter.</small></div>
+          </div>
+          <div class="order-assistant-actions">
+            <button class="button ghost" id="order-assistant-apply" type="button">APPLY RECOMMENDATION</button>
+            <button class="button ghost" id="order-assistant-mid" type="button">USE MID PRICE</button>
+          </div>
+          <div class="order-execution">
+            <div class="order-execution-head">
+              <span>EXECUTION FORECAST</span>
+              <small id="order-execution-note">Impact will update with size and side.</small>
+            </div>
+            <div class="order-execution-grid">
+              <div><span>EST. FILL</span><b id="order-execution-fill">—</b><small id="order-execution-fill-note">Depth-aware fill estimate.</small></div>
+              <div><span>EST. IMPACT</span><b id="order-execution-impact">—</b><small id="order-execution-impact-note">Approximate slippage against the current book.</small></div>
+              <div><span>ROUTE</span><b id="order-execution-route">—</b><small id="order-execution-route-note">Best execution route for the selected side.</small></div>
+            </div>
+            <div id="order-execution-ladder" class="order-execution-ladder"><p class="empty">Execution ladder will appear here.</p></div>
+          </div>
+        </div>
         <div class="book-grid">
           <article class="book-card"><div class="book-title">BIDS</div><div id="bid-book" class="book-list"><p class="empty">No bids yet.</p></div></article>
           <article class="book-card"><div class="book-title">ASKS</div><div id="ask-book" class="book-list"><p class="empty">No asks yet.</p></div></article>
@@ -353,6 +587,29 @@
         <article class="chart-card"><div class="chart-head"><div><span>PRICE HISTORY</span><b id="price-change">INTERNAL USD QUOTE</b></div><small>LAST 60 PURCHASES</small></div><svg id="price-chart" viewBox="0 0 720 260" role="img" aria-label="E-Coin USD price history"><g class="chart-gridlines"></g><path class="area" d=""></path><polyline points=""></polyline></svg><div class="chart-axis"><span id="price-min">—</span><span id="price-max">—</span></div></article>
         <article class="chart-card"><div class="chart-head"><div><span>NETWORK LOAD</span><b>SETTLEMENT BATCHES</b></div><small>RECENT BLOCKS</small></div><svg id="load-chart" viewBox="0 0 720 260" role="img" aria-label="Recent block transaction counts"><g class="chart-gridlines"></g><g class="bars"></g></svg><div class="chart-axis"><span>OLDER</span><span>LATEST</span></div></article>
       </div>
+      <article class="heatmap-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">ACTIVITY HEATMAP</p><h2>When this wallet moves</h2></div>
+          <small>WEEKDAY × HOUR</small>
+        </div>
+        <div class="heatmap-summary">
+          <p id="heatmap-summary">No activity heatmap yet.</p>
+          <small id="heatmap-peak">Loading time-of-day patterns.</small>
+        </div>
+        <svg id="activity-heatmap" class="activity-heatmap" viewBox="0 0 760 260" role="img" aria-label="Wallet activity heatmap"><rect x="0" y="0" width="760" height="260" fill="#0b0f0d"></rect></svg>
+      </article>
+      <article class="fee-intelligence-panel">
+        <div class="section-title"><div><p class="eyebrow">FEE + SETTLEMENT INTELLIGENCE</p><h2>Choose speed with evidence</h2></div><button class="button ghost" id="fee-apply-recommended" type="button">APPLY RECOMMENDED</button></div>
+        <div class="fee-intelligence-metrics">
+          <div><span>MEMPOOL PRESSURE</span><b id="fee-pressure">—</b><small id="fee-pressure-note">Analyzing queue depth</small></div>
+          <div><span>MEDIAN FEE</span><b id="fee-median">—</b><small id="fee-trend">Trend unavailable</small></div>
+          <div><span>BLOCK CADENCE</span><b id="fee-cadence">—</b><small id="fee-confidence">Low confidence</small></div>
+          <div><span>ACTIVE WALLET</span><b id="fee-wallet-risk">—</b><small id="fee-wallet-note">No pending transfers</small></div>
+        </div>
+        <div id="fee-tier-cards" class="fee-tier-cards"><p class="empty">Waiting for fee telemetry.</p></div>
+        <div class="fee-distribution"><div><span>QUEUE FEE DISTRIBUTION</span><small id="fee-sample-size">0 samples</small></div><svg id="fee-distribution-chart" viewBox="0 0 760 150" role="img" aria-label="Mempool fee distribution"><g class="bars"></g></svg></div>
+        <p id="fee-intelligence-guidance" class="search-summary">Settlement predictions update with the mempool and recent blocks.</p>
+      </article>
       <div class="market-ledger"><div class="section-title"><div><p class="eyebrow">TREASURY MARKET</p><h2>Recent purchases</h2></div><button class="button ghost" id="refresh-data" type="button">REFRESH DATA</button></div><div id="market-history" class="market-history"><p class="empty">No market purchases yet.</p></div></div>
       <p class="data-disclaimer">This is an internal E-Coin devnet market, not an external exchange price. No real USD, card details, or bank information are collected.</p>
     </section>
@@ -366,6 +623,36 @@
         <article class="learn-card"><span>04 / CONTRACTS</span><h2>Predictable programs.</h2><p>Timelocks release once after a deadline. Vesting divides funds into scheduled releases. Hashlocks release to a beneficiary who reveals the committed secret, or refund the creator after expiry. Every transition is replay-verified.</p></article>
         <article class="learn-card"><span>05 / REGULATION</span><h2>Rules depend on where you are.</h2><p>Real-world crypto products can trigger money-transmitter, AML/KYC, sanctions, consumer-protection, and tax rules. If a service exchanges value, holds customer funds, or markets an investment, the compliance burden can change quickly by country and state. This app is a devnet sandbox, not legal advice.</p></article>
         <article class="learn-card"><span>06 / SECURITY</span><h2>Attackers look for shortcuts.</h2><p>Use unique long passwords, enable multi-factor authentication wherever it exists, verify addresses before sending, and keep recovery copies offline. Never share a seed phrase, never approve urgent surprise requests, and treat any promise of guaranteed profit as a red flag.</p></article>
+        <article class="learn-card"><span>07 / OFFLINE SIGNING</span><h2>Separate signing from broadcast.</h2><p>Unsigned transfer files contain public transaction intent but no private key. A matching wallet can sign that intent locally, while another online device broadcasts the short-lived signed envelope. Always compare the fingerprint, amount, recipient, fee, and expiry on both devices.</p></article>
+      </div>
+      <div class="learn-lab">
+        <div class="section-title compact">
+          <div><p class="eyebrow">LEARN LAB</p><h2>Choose a topic and get the next best lesson.</h2></div>
+          <small>ADAPTIVE GUIDE</small>
+        </div>
+        <div class="learn-lab-grid">
+          <div class="learn-lab-controls">
+            <label for="learn-topic">TOPIC
+              <select id="learn-topic">
+                <option value="overview">Protocol overview</option>
+                <option value="wallet">Wallet safety</option>
+                <option value="contracts">Smart contracts</option>
+                <option value="market">Market and execution</option>
+                <option value="regulation">Legal and compliance</option>
+                <option value="offline">Offline signing</option>
+              </select>
+            </label>
+            <div class="learn-lab-meta">
+              <div><span>FOCUS</span><b id="learn-focus">Overview</b><small id="learn-focus-note">A quick orientation for new users.</small></div>
+              <div><span>RISK</span><b id="learn-risk">LOW</b><small id="learn-risk-note">This topic helps reduce common mistakes.</small></div>
+              <div><span>NEXT STEP</span><b id="learn-next-step">Read the summary</b><small id="learn-next-step-note">Then complete the knowledge check.</small></div>
+            </div>
+          </div>
+          <div class="learn-lab-content">
+            <p id="learn-lab-summary">Select a topic to see a focused explanation and checklist.</p>
+            <div id="learn-lab-checklist" class="learn-lab-checklist"><p class="empty">Guidance will appear here.</p></div>
+          </div>
+        </div>
       </div>
       <div class="safety-panel"><div><p class="eyebrow">WALLET SAFETY</p><h2>Three habits beat clever attackers.</h2></div><ol><li><b>Encrypt and back up.</b> Enable the wallet vault, use a unique password, and keep an offline backup. NIST guidance favors long, memorable passwords and discourages brittle rules that make people reuse weak ones.</li><li><b>Verify the destination.</b> Compare the beginning and end of an address, review new-recipient warnings, and treat QR codes or copied addresses as untrusted until checked.</li><li><b>Understand finality.</b> A signed transfer or deployed contract cannot be quietly reversed. Test with a small amount first, and remember that crypto scams often rely on urgency, impersonation, and promises of easy money.</li></ol></div>
       <section class="quiz-card" aria-labelledby="quiz-title"><p class="eyebrow">KNOWLEDGE CHECK</p><h2 id="quiz-title">Can you operate safely?</h2><div id="quiz-question"></div><div id="quiz-options" class="quiz-options"></div><div class="quiz-footer"><span id="quiz-progress">QUESTION 1 / 4</span><b id="quiz-score">SCORE 0</b></div></section>
@@ -385,7 +672,16 @@
     <section class="review-card compact-card">
       <div class="panel-head"><span>LOCAL WALLET MANAGER</span><button class="review-close" id="close-wallet-manager" type="button" aria-label="Close wallet manager">×</button></div>
       <p class="eyebrow">MULTI-WALLET CUSTODY</p><h2 id="wallet-manager-title">Create a wallet.</h2>
-      <form id="wallet-form" autocomplete="off"><label for="wallet-name">WALLET NAME</label><input id="wallet-name" required maxlength="24" placeholder="e.g. Savings"><button class="button primary contact-save" type="submit">GENERATE LOCALLY</button></form>
+      <p id="wallet-manager-summary" class="microcopy">Create standalone wallets or nested subwallets that inherit a visible parent relationship.</p>
+      <form id="wallet-form" autocomplete="off">
+        <label for="wallet-name">WALLET NAME</label><input id="wallet-name" required maxlength="24" placeholder="e.g. Savings">
+        <label class="demo-confirm"><input id="wallet-is-subwallet" type="checkbox"> Create as subwallet of the active wallet</label>
+        <button class="button primary contact-save" type="submit">GENERATE LOCALLY</button>
+      </form>
+      <div class="wallet-tree-panel">
+        <div class="wallet-tree-head"><span>SUBWALLET TREE</span><small id="wallet-tree-summary">Loading hierarchy.</small></div>
+        <div id="wallet-tree" class="wallet-tree"></div>
+      </div>
       <div class="contact-list" id="wallet-list"></div>
       <p class="microcopy">Every wallet has its own Ed25519 key. Back up each wallet before relying on it.</p>
     </section>
@@ -429,19 +725,32 @@
   </div>
 
   <div class="review-overlay" id="contract-overlay" role="dialog" aria-modal="true" aria-labelledby="contract-title" hidden>
-    <section class="review-card">
+    <section class="review-card contract-builder-card">
       <div class="panel-head"><span>SMART CONTRACT BUILDER</span><button class="review-close" id="close-contract" type="button" aria-label="Close contract builder">×</button></div>
       <p class="eyebrow">AUDITED TEMPLATES</p><h2 id="contract-title">Program a release.</h2>
       <form id="contract-form" autocomplete="off">
-        <label for="contract-type">TEMPLATE</label><select id="contract-type"><option value="timelock">TIMELOCK / ONE RELEASE</option><option value="vesting">VESTING / SCHEDULED RELEASES</option><option value="hashlock">HASHLOCK / SECRET ESCROW</option></select>
+        <label for="contract-type">TEMPLATE</label><select id="contract-type"><option value="timelock">TIMELOCK / ONE RELEASE</option><option value="vesting">VESTING / SCHEDULED RELEASES</option><option value="milestone">MILESTONE / JOINT APPROVAL</option><option value="hashlock">HASHLOCK / SECRET ESCROW</option></select>
         <label for="contract-beneficiary">BENEFICIARY</label><input id="contract-beneficiary" required pattern="ec1[0-9a-f]{38}" placeholder="ec1…">
         <div class="field-row"><label for="contract-amount">AMOUNT<input id="contract-amount" required type="number" min="0.000001" step="0.000001" placeholder="0.000000"></label><label id="unlock-field" for="contract-unlock">UNLOCK TIME<input id="contract-unlock" required type="datetime-local"></label></div>
         <div class="field-row" id="vesting-fields" hidden><label for="contract-installments">INSTALLMENTS<input id="contract-installments" type="number" min="2" max="52" value="12"></label><label for="contract-interval">EVERY<select id="contract-interval"><option value="60000">1 MINUTE / DEMO</option><option value="86400000">1 DAY</option><option value="604800000" selected>1 WEEK</option><option value="2592000000">30 DAYS</option></select></label></div>
         <div id="hashlock-fields" hidden><label for="contract-secret">CLAIM SECRET<input id="contract-secret" maxlength="128" autocomplete="off" placeholder="Share privately with the beneficiary"></label><label class="contract-memo-label" for="contract-refund">REFUND DEADLINE<input id="contract-refund" type="datetime-local"></label><div class="hash-preview"><span>SHA-256 COMMITMENT</span><code id="contract-secret-hash">ENTER A SECRET</code></div></div>
         <label class="contract-memo-label" for="contract-memo">MEMO <span>OPTIONAL</span></label><input id="contract-memo" maxlength="96" placeholder="Purpose of this contract">
         <div class="contract-preview" id="contract-preview"><span>RELEASE PLAN</span><div><b>ONE RELEASE</b><strong>ENTER AN AMOUNT</strong></div><small>Schedule analysis updates before signing.</small></div>
-        <div class="contract-warning">Funds cannot be recovered early. The protocol releases them automatically after the selected time.</div>
-        <button class="button send" type="submit">SIGN &amp; DEPLOY <span>→</span></button>
+        <div class="contract-simulation">
+          <div class="contract-simulation-head"><div><span>DEPLOYMENT PREFLIGHT</span><b id="contract-simulation-state">INCOMPLETE</b></div><code id="contract-simulation-id">DRAFT NOT READY</code></div>
+          <div class="contract-simulation-metrics">
+            <div><span>RISK SCORE</span><b id="contract-simulation-risk">—</b></div>
+            <div><span>BALANCE AFTER</span><b id="contract-simulation-after">—</b></div>
+            <div><span>LIQUIDITY LOCK</span><b id="contract-simulation-share">—</b></div>
+            <div><span>FINAL EVENT</span><b id="contract-simulation-final">—</b></div>
+          </div>
+          <p id="contract-simulation-guidance">Complete the draft to run protocol and liquidity checks.</p>
+          <div id="contract-simulation-signals" class="contract-simulation-signals"><div class="signal">Waiting for beneficiary, amount, and schedule.</div></div>
+          <div class="contract-schedule-head"><span>PROJECTED CASH FLOWS</span><small id="contract-schedule-count">0 EVENTS</small></div>
+          <div id="contract-schedule-preview" class="contract-schedule-preview"><p class="empty">No valid cash-flow schedule yet.</p></div>
+        </div>
+        <div class="contract-warning" id="contract-warning">Funds cannot be recovered early. The protocol releases them automatically after the selected time.</div>
+        <button class="button send" id="deploy-contract" type="submit">SIGN &amp; DEPLOY <span>→</span></button>
       </form>
     </section>
   </div>
@@ -490,7 +799,11 @@
       <h2 id="receipt-title">Block <span id="receipt-height">—</span></h2>
       <div class="receipt-status"><i></i><span>SETTLED ON AURORA</span><time id="receipt-time">—</time></div>
       <dl class="review-details receipt-details" id="receipt-fields"></dl>
-      <button class="button ghost receipt-copy" id="copy-receipt" type="button">COPY RECEIPT ID</button>
+      <div class="receipt-verification">
+        <div class="receipt-verification-head"><div><span>INDEPENDENT VERIFICATION</span><b id="receipt-verification-state">CHECKING</b></div><small id="receipt-verification-score">0 / 0 CHECKS</small></div>
+        <div id="receipt-verification-list" class="receipt-verification-list"><p class="empty">Recomputing cryptographic evidence.</p></div>
+      </div>
+      <div class="receipt-actions"><button class="button ghost" id="copy-receipt" type="button">COPY RECEIPT ID</button><button class="button ghost" id="copy-verification" type="button">COPY VERIFICATION</button></div>
     </section>
   </div>
 

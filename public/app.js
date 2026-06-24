@@ -1,4 +1,8 @@
 import { decryptRecoveryBundle, decryptWalletVault, encryptRecoveryBundle, encryptWalletVault, stripWalletSecretsFromCollection } from "./vault.js";
+import { planRebalance } from "./rebalance.js";
+import { simulateContractDraft } from "./contract-simulator.js";
+import { createSignedTransferEnvelope, createUnsignedTransferEnvelope, validateSignedTransferEnvelope, validateUnsignedTransferEnvelope } from "./offline-transfer.js";
+import { verifySettlementReceipt } from "./receipt-verifier.js";
 
 const SCALE = 1_000_000;
 const PENDING_TTL_MS = 10 * 60_000;
@@ -11,6 +15,7 @@ const activeWalletKey = "ecoin.activeWallet.v1";
 const contactsKey = "ecoin.contacts.v1";
 const watchlistKey = "ecoin.watchlist.v1";
 const watchlistSnapshotKey = "ecoin.watchlist.snapshot.v1";
+const activityRulesKey = "ecoin.activityRules.v1";
 const marketAlertsKey = "ecoin.marketAlerts.v1";
 const walletHistoryKey = "ecoin.walletHistory.v1";
 const paymentPlansKey = "ecoin.paymentPlans.v1";
@@ -21,6 +26,9 @@ const transactionGuardKey = "ecoin.transactionGuard.v1";
 const spendJournalKey = "ecoin.spendJournal.v1";
 const sessionSecurityKey = "ecoin.sessionSecurity.v1";
 const recoveryAuditKey = "ecoin.recoveryAudit.v1";
+const securityJournalKey = "ecoin.securityJournal.v1";
+const stressScenarioKey = "ecoin.stressScenario.v1";
+const rebalanceConfigKey = "ecoin.rebalanceConfig.v1";
 let wallet;
 let wallets = [];
 let vaultEnvelope = null;
@@ -53,6 +61,14 @@ let paymentRequestsByWallet = {};
 let paymentRequests = [];
 let walletActivity = [];
 let walletActivitySummary = { inflow:0, outflow:0, fees:0, net:0, counterparties:0, txCount:0, firstSeen:null, lastSeen:null, anomalies:[] };
+let walletActivitySignals = [];
+let walletCounterpartyInsights = [];
+let walletActivityRulesByWallet = {};
+let walletActivityRules = { largeTransferEc: 10, burstCount: 4, burstWindowHours: 24, watchNewCounterparties: true, watchTopCounterparties: true };
+let walletActivityFilter = "all";
+let walletActivityQuery = "";
+let walletActivityFrom = "";
+let walletActivityTo = "";
 let recentTransfersByWallet = {};
 let recentTransfers = [];
 let transferTemplatesByWallet = {};
@@ -63,6 +79,8 @@ let spendJournalByWallet = {};
 let spendJournal = [];
 let portfolioEntries = [];
 let portfolioUpdatedAt = 0;
+let portfolioActivityByAddress = {};
+let portfolioActivityUpdatedAt = 0;
 let batchDraft = [];
 let currentContracts = [];
 let contractFlowFilter = "all";
@@ -70,6 +88,16 @@ let pendingRecoveryEnvelope = null;
 let sessionSecurity = { timeoutMinutes:15, lockWhenHidden:true };
 let lastSensitiveActivity = Date.now();
 let recoveryAudit = {};
+let securityJournalByWallet = {};
+let securityJournal = [];
+let stressScenariosByWallet = {};
+let stressScenario = { horizonDays:30, priceShockPct:-35, extraSpendEc:0, includeHistory:true };
+let stressRecommendedReserve = 0;
+let rebalanceConfig = { strategy:"equal", floorEc:25, bufferEc:5, minimumEc:.01, includeTreasury:false };
+let rebalancePlan = [];
+let contractSimulationVersion = 0;
+let offlineSigningStage = "idle";
+let receiptVerificationReport = "";
 
 const $ = (selector) => document.querySelector(selector);
 const format = (micro) => (micro / SCALE).toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
@@ -104,7 +132,7 @@ async function api(path, options) {
   return value;
 }
 
-async function createWallet(name="Wallet") {
+async function createWallet(name="Wallet", options = {}) {
   if (!crypto.subtle) throw new Error("Secure browser cryptography is unavailable");
   const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
   const [publicKey, privateKey] = await Promise.all([
@@ -112,7 +140,21 @@ async function createWallet(name="Wallet") {
     crypto.subtle.exportKey("jwk", keys.privateKey),
   ]);
   const address=await addressFromKey(publicKey);
-  return { version:1,id:address,name,publicKey,privateKey,address,createdAt:new Date().toISOString() };
+  const parentAddress = options.parentAddress ?? null;
+  const rootAddress = options.rootAddress ?? parentAddress ?? address;
+  const kind = options.kind === "subwallet" || parentAddress ? "subwallet" : "wallet";
+  return {
+    version:1,
+    id:address,
+    name,
+    kind,
+    parentAddress,
+    rootAddress,
+    publicKey,
+    privateKey,
+    address,
+    createdAt:new Date().toISOString(),
+  };
 }
 
 async function saveWallets() {
@@ -137,23 +179,43 @@ async function loadWallets() {
   const storedVault = localStorage.getItem(walletVaultKey);
   if (storedVault) {
     vaultEnvelope = JSON.parse(storedVault);
-    wallets = Array.isArray(vaultEnvelope.index) ? vaultEnvelope.index.filter(isWalletMeta) : [];
+    wallets = Array.isArray(vaultEnvelope.index) ? vaultEnvelope.index.filter(isWalletMeta).map((candidate) => ({
+      kind: candidate.kind === "subwallet" ? "subwallet" : "wallet",
+      parentAddress: candidate.parentAddress ?? null,
+      rootAddress: candidate.rootAddress ?? candidate.parentAddress ?? candidate.address,
+      ...candidate,
+    })) : [];
     vaultState = "locked";
     selectActiveWallet();
     if (!wallets.length) throw new Error("Encrypted wallet vault is empty");
     return;
   }
-  wallets=(JSON.parse(localStorage.getItem(walletsKey))||[]).filter((candidate)=>candidate?.privateKey&&candidate?.publicKey&&/^ec1[0-9a-f]{38}$/.test(candidate.address));
+  wallets=(JSON.parse(localStorage.getItem(walletsKey))||[]).filter((candidate)=>candidate?.privateKey&&candidate?.publicKey&&/^ec1[0-9a-f]{38}$/.test(candidate.address)).map((candidate)=>({
+    kind: candidate.kind === "subwallet" ? "subwallet" : "wallet",
+    parentAddress: candidate.parentAddress ?? null,
+    rootAddress: candidate.rootAddress ?? candidate.parentAddress ?? candidate.address,
+    ...candidate,
+  }));
   if (!wallets.length) {
     const legacy=JSON.parse(localStorage.getItem(walletKey));
-    wallets=[legacy?{...legacy,id:legacy.address,name:legacy.name||"Primary"}:await createWallet("Primary")];
+    wallets=[legacy?{...legacy,id:legacy.address,name:legacy.name||"Primary",kind:"wallet",parentAddress:null,rootAddress:legacy.address}:await createWallet("Primary")];
     localStorage.removeItem(walletKey);
   }
   vaultEnvelope = null;
   vaultPassword = null;
   vaultState = "none";
   selectActiveWallet();
+  loadSecurityJournal();
   await saveWallets();
+}
+
+function walletDisplayKind(candidate) {
+  return candidate.parentAddress ? "SUBWALLET" : "WALLET";
+}
+
+function walletParentName(candidate) {
+  if (!candidate.parentAddress) return null;
+  return wallets.find((entry) => entry.address === candidate.parentAddress)?.name || short(candidate.parentAddress, 10);
 }
 
 async function addressFromKey(jwk) {
@@ -229,6 +291,10 @@ function canonicalContractDeployment(tx) {
   return JSON.stringify({contractType:tx.contractType,from:tx.from,beneficiary:tx.beneficiary,amount:tx.amount,fee:tx.fee,nonce:tx.nonce,unlockTime:tx.unlockTime,installments:tx.installments??1,intervalMs:tx.intervalMs??0,secretHash:tx.secretHash??"",refundTime:tx.refundTime??0,memo:tx.memo??"",timestamp:tx.timestamp,publicKey:tx.publicKey});
 }
 
+function canonicalContractApproval(tx) {
+  return JSON.stringify({contractAddress:tx.contractAddress,from:tx.from,milestone:tx.milestone,fee:tx.fee,nonce:tx.nonce,timestamp:tx.timestamp,publicKey:tx.publicKey});
+}
+
 function canonicalMarketOrder(order) {
   return JSON.stringify({ address:order.address, side:order.side, amount:order.amount, limitPriceMicroUsd:order.limitPriceMicroUsd, orderId:order.orderId, timestamp:order.timestamp, publicKey:order.publicKey });
 }
@@ -265,6 +331,13 @@ async function signContract(tx) {
   return toBase64Url(new Uint8Array(signature));
 }
 
+async function signContractApproval(tx) {
+  if (!wallet?.privateKey) throw new Error("Unlock the wallet vault to approve milestone contracts");
+  const key=await crypto.subtle.importKey("jwk",wallet.privateKey,{name:"Ed25519"},false,["sign"]);
+  const signature=await crypto.subtle.sign("Ed25519",key,new TextEncoder().encode(canonicalContractApproval(tx)));
+  return toBase64Url(new Uint8Array(signature));
+}
+
 async function signMarketOrder(order) {
   if (!wallet?.privateKey) throw new Error("Unlock the wallet vault to place market orders");
   const key=await crypto.subtle.importKey("jwk",wallet.privateKey,{name:"Ed25519"},false,["sign"]);
@@ -277,6 +350,26 @@ async function signMarketCancel(order) {
   const key=await crypto.subtle.importKey("jwk",wallet.privateKey,{name:"Ed25519"},false,["sign"]);
   const signature=await crypto.subtle.sign("Ed25519",key,new TextEncoder().encode(canonicalMarketCancel(order)));
   return toBase64Url(new Uint8Array(signature));
+}
+
+async function approveMilestoneContract(contractAddress, milestone) {
+  if (vaultState === "locked") throw new Error("Unlock the vault before approving milestone contracts");
+  const contract = currentContracts.find((item) => item.address === contractAddress) || (await api(`/contracts/${contractAddress}`));
+  const tx = {
+    contractAddress,
+    from: wallet.address,
+    milestone: Number(milestone),
+    fee: activeFee,
+    nonce: currentAccount.nextNonce,
+    timestamp: Date.now(),
+    publicKey: wallet.publicKey,
+  };
+  tx.signature = await signContractApproval(tx);
+  const result = await api(`/contracts/${contractAddress}/approve`, { method:"POST", body:JSON.stringify(tx) });
+  await refresh();
+  recordSecurityEvent("milestone_approved", "Milestone approved", `Milestone ${tx.milestone} on ${short(contractAddress, 10)} was approved by ${wallet.name}.`, "good");
+  toast(`${contract.contractType === "milestone" ? "Milestone" : "Contract"} approval queued`);
+  return result;
 }
 
 async function refresh() {
@@ -323,6 +416,7 @@ async function refresh() {
   currentPending=mempool.transactions;
   renderBlocks(loadedBlocks,currentPending); updateLoadMore();
   renderPendingControl();
+  renderFeeIntelligence();
   renderContracts(contracts);
   renderWalletIntel(status, account, contracts, market);
   recordWalletHistory(account, market, status);
@@ -390,19 +484,78 @@ function renderPendingControl() {
   }).join("");
 }
 
+function renderFeeIntelligence() {
+  if (!$("#fee-tier-cards")) return;
+  const blockMs = Math.max(1_000, Number(feeQuote.averageBlockTimeMs) || 6_000);
+  const capacity = Math.max(1, Number(feeQuote.capacity) || currentStatus?.metrics?.blockCapacity || 250);
+  const fallbackTier = (fee) => {
+    const queueAhead = currentPending.filter((tx) => Number(tx.fee || 0) >= fee).length;
+    const estimatedBlocks = Math.max(1, Math.ceil((queueAhead + 1) / capacity));
+    return { fee, queueAhead, estimatedBlocks, estimatedMs:estimatedBlocks * blockMs, expiryRisk:false };
+  };
+  const tiers = feeQuote.tiers || { economy:fallbackTier(feeQuote.economy), standard:fallbackTier(feeQuote.standard), priority:fallbackTier(feeQuote.priority) };
+  const recommended = recommendedFeeTier(Number(feeQuote.pressure) || 0);
+  const pressure = Math.max(0, Math.min(1, Number(feeQuote.pressure) || 0));
+  const outgoing = currentPending.filter((tx) => tx.from === wallet.address && tx.type === "transfer");
+  const urgent = outgoing.filter((tx) => PENDING_TTL_MS - (Date.now() - (tx.queuedAt ?? tx.timestamp)) < 2 * 60_000).length;
+  const underpriced = outgoing.filter((tx) => tx.fee < feeQuote.standard).length;
+  const walletRisk = urgent ? "EXPIRY RISK" : underpriced ? "FEE LAG" : outgoing.length ? "ON TRACK" : "CLEAR";
+  $("#fee-pressure").textContent = `${Math.round(pressure * 100)}%`;
+  $("#fee-pressure-note").textContent = `${currentPending.length} queued · ${capacity} tx capacity`;
+  $("#fee-median").textContent = `${format(feeQuote.percentiles?.p50 ?? feeQuote.standard)} EC`;
+  $("#fee-trend").textContent = `${String(feeQuote.trend || "stable").toUpperCase()} fee trend`;
+  $("#fee-cadence").textContent = formatDuration(blockMs);
+  $("#fee-confidence").textContent = `${String(feeQuote.confidence || "low").toUpperCase()} confidence · ${feeQuote.sampleSize ?? 0} samples`;
+  $("#fee-wallet-risk").textContent = walletRisk;
+  $("#fee-wallet-note").textContent = outgoing.length ? `${outgoing.length} pending · ${underpriced} below standard · ${urgent} near expiry` : "No pending transfers";
+  $("#fee-tier-cards").innerHTML = ["economy", "standard", "priority"].map((name) => {
+    const tier = tiers[name] || fallbackTier(feeQuote[name]);
+    return `<article class="fee-tier-card ${name === recommended ? "recommended" : ""} ${tier.expiryRisk ? "warning" : ""}">
+      <div><span>${escapeHtml(name.toUpperCase())}</span>${name === recommended ? "<small>RECOMMENDED</small>" : ""}</div>
+      <b>${escapeHtml(format(tier.fee))} EC</b>
+      <p>~ ${escapeHtml(String(tier.estimatedBlocks))} block${tier.estimatedBlocks === 1 ? "" : "s"} · ${escapeHtml(formatDuration(tier.estimatedMs))}</p>
+      <small>${escapeHtml(String(tier.queueAhead))} queued at this fee or higher${tier.expiryRisk ? " · expiry risk" : ""}</small>
+    </article>`;
+  }).join("");
+  const values = [feeQuote.percentiles?.p25 ?? feeQuote.economy, feeQuote.percentiles?.p50 ?? feeQuote.standard, feeQuote.percentiles?.p75 ?? feeQuote.priority, feeQuote.economy, feeQuote.standard, feeQuote.priority].map((value) => Math.max(0, Number(value) || 0));
+  const max = Math.max(1, ...values);
+  const labels = ["P25", "P50", "P75", "ECO", "STD", "PRI"];
+  $("#fee-distribution-chart .bars").innerHTML = values.map((value, index) => {
+    const height = 86 * value / max;
+    const x = 52 + index * 112;
+    return `<rect x="${x}" y="${108-height}" width="72" height="${height}" rx="2" class="${index >= 3 ? "tier" : "percentile"}"></rect><text x="${x+36}" y="128" text-anchor="middle">${labels[index]}</text><text x="${x+36}" y="${Math.max(12,101-height)}" text-anchor="middle">${(value/SCALE).toFixed(3)}</text>`;
+  }).join("");
+  $("#fee-sample-size").textContent = `${feeQuote.sampleSize ?? 0} recent fee samples`;
+  $("#fee-intelligence-guidance").textContent = urgent ? `${urgent} pending transfer${urgent === 1 ? " is" : "s are"} approaching expiry. Use Pending Control to replace the fee before the envelope is pruned.` : underpriced ? `${underpriced} pending transfer${underpriced === 1 ? " is" : "s are"} below the current standard quote. A fee replacement may improve inclusion.` : pressure > .75 ? "Queue pressure is elevated. Priority pricing reduces queue-ahead exposure, while batching reduces repeated signing overhead." : `The ${recommended} tier currently balances settlement time and cost. Predictions use recent blocks plus the live mempool.`;
+  $("#fee-apply-recommended").textContent = `APPLY ${recommended.toUpperCase()}`;
+}
+
 function renderContracts(contracts) {
   currentContracts = contracts;
   $("#contract-count").textContent=contracts.length;
-  const locked=contracts.filter((contract)=>contract.creator===wallet.address&&["locked","vesting"].includes(contract.status)).reduce((sum,contract)=>sum+contract.amount-(contract.releasedAmount??0),0);
+  const locked=contracts.filter((contract)=>contract.creator===wallet.address&&["locked","vesting","milestone"].includes(contract.status)).reduce((sum,contract)=>sum+contract.amount-(contract.releasedAmount??0),0);
   $("#contract-locked").textContent=`${format(locked)} EC`;
-  $("#contract-list").innerHTML=contracts.length ? contracts.map((contract)=>`<div class="contract-row"><span class="contract-status ${contract.status}">${contract.contractType.toUpperCase()} / ${contract.status.toUpperCase()}</span><span>${escapeHtml(format(contract.amount-(contract.releasedAmount??0)))} EC remaining → ${escapeHtml(short(contract.beneficiary,10))}</span><code title="${contract.address}">${escapeHtml(short(contract.address,12))}</code>${contract.contractType==="hashlock"&&contract.status==="locked"?`<button class="contract-claim" type="button" data-claim="${contract.address}">CLAIM</button>`:`<time>${contract.status==="released"?"RELEASED":contract.status==="refunded"?"REFUNDED":contract.contractType==="vesting"?`${contract.releasedInstallments}/${contract.installments} PAID`:new Date(contract.unlockTime).toLocaleDateString()}</time>`}</div>`).join("") : '<p class="empty">No contracts for this wallet yet.</p>';
+  $("#contract-list").innerHTML=contracts.length ? contracts.map((contract)=>{
+    const currentRound = contract.approvalRound ?? (contract.releasedInstallments ?? 0) + 1;
+    const creatorApproved = (contract.creatorApprovedRound ?? 0) >= currentRound;
+    const beneficiaryApproved = (contract.beneficiaryApprovedRound ?? 0) >= currentRound;
+    const approvalLabel = contract.contractType === "milestone" && contract.status === "locked"
+      ? `${creatorApproved ? "CREATOR" : "AWAITING CREATOR"} / ${beneficiaryApproved ? "BENEFICIARY" : "AWAITING BENEFICIARY"}`
+      : "";
+    const action = contract.contractType==="hashlock"&&contract.status==="locked"
+      ? `<button class="contract-claim" type="button" data-claim="${contract.address}">CLAIM</button>`
+      : contract.contractType==="milestone"&&contract.status==="locked"&&(contract.creator===wallet.address||contract.beneficiary===wallet.address)
+        ? `<button class="contract-claim" type="button" data-approve="${contract.address}" data-milestone="${currentRound}">${contract.creator===wallet.address&&!creatorApproved ? "APPROVE AS CREATOR" : contract.beneficiary===wallet.address&&!beneficiaryApproved ? "APPROVE AS BENEFICIARY" : "APPROVED"}</button>`
+        : `<time>${contract.status==="released"?"RELEASED":contract.status==="refunded"?"REFUNDED":contract.contractType==="vesting"||contract.contractType==="milestone"?`${contract.releasedInstallments}/${contract.installments} PAID`:new Date(contract.unlockTime).toLocaleDateString()}</time>`;
+    return `<div class="contract-row"><span class="contract-status ${contract.status}">${contract.contractType.toUpperCase()} / ${contract.status.toUpperCase()}</span><span>${escapeHtml(format(contract.amount-(contract.releasedAmount??0)))} EC remaining → ${escapeHtml(short(contract.beneficiary,10))}${approvalLabel ? ` · ${escapeHtml(approvalLabel)}` : ""}</span><code title="${contract.address}">${escapeHtml(short(contract.address,12))}</code>${action}</div>`;
+  }).join("") : '<p class="empty">No contracts for this wallet yet.</p>';
   renderContractIntelligence(contracts);
 }
 
 function contractTimelineRows(contracts = currentContracts) {
   const rows = [];
   for (const contract of contracts) {
-    if (!["locked", "vesting"].includes(contract.status)) continue;
+    if (!["locked", "vesting", "milestone"].includes(contract.status)) continue;
     const remaining = contract.amount - (contract.releasedAmount ?? 0);
     if (contract.contractType === "hashlock") {
       const isBeneficiary = contract.beneficiary === wallet.address;
@@ -413,14 +566,19 @@ function contractTimelineRows(contracts = currentContracts) {
     const released = contract.releasedInstallments ?? 0;
     const baseAmount = Math.floor(contract.amount / installments);
     for (let index = released; index < installments; index++) {
+      const milestoneRound = index + 1;
+      const creatorApproved = (contract.creatorApprovedRound ?? 0) >= milestoneRound;
+      const beneficiaryApproved = (contract.beneficiaryApprovedRound ?? 0) >= milestoneRound;
       rows.push({
         contract,
         dueAt:contract.unlockTime + index * (contract.intervalMs ?? 0),
         amount:index === installments - 1 ? contract.amount - baseAmount * (installments - 1) : baseAmount,
         direction:contract.beneficiary === wallet.address ? "incoming" : "outgoing",
-        kind:contract.contractType === "vesting" ? `INSTALLMENT ${index + 1}/${installments}` : "TIMELOCK RELEASE",
-        detail:contract.memo || `${contract.contractType} contract ${short(contract.address, 9)}`,
+        kind:contract.contractType === "vesting" ? `INSTALLMENT ${index + 1}/${installments}` : contract.contractType === "milestone" ? `MILESTONE ${index + 1}/${installments}` : "TIMELOCK RELEASE",
+        detail:contract.contractType === "milestone" ? `${creatorApproved ? "creator approved" : "awaiting creator"} · ${beneficiaryApproved ? "beneficiary approved" : "awaiting beneficiary"}` : contract.memo || `${contract.contractType} contract ${short(contract.address, 9)}`,
         installment:index + 1,
+        creatorApproved,
+        beneficiaryApproved,
       });
     }
   }
@@ -429,7 +587,7 @@ function contractTimelineRows(contracts = currentContracts) {
 
 function renderContractIntelligence(contracts = currentContracts) {
   if (!$("#contract-timeline")) return;
-  const active = contracts.filter((contract) => ["locked", "vesting"].includes(contract.status));
+  const active = contracts.filter((contract) => ["locked", "vesting", "milestone"].includes(contract.status));
   const outbound = active.filter((contract) => contract.creator === wallet.address).reduce((sum, contract) => sum + contract.amount - (contract.releasedAmount ?? 0), 0);
   const inbound = active.filter((contract) => contract.beneficiary === wallet.address).reduce((sum, contract) => sum + contract.amount - (contract.releasedAmount ?? 0), 0);
   const allRows = contractTimelineRows(contracts);
@@ -437,10 +595,12 @@ function renderContractIntelligence(contracts = currentContracts) {
   const soonThreshold = now + 7 * 24 * 60 * 60_000;
   const urgent = allRows.filter((row) => row.dueAt <= now + 60 * 60_000).length;
   const hashlocks = active.filter((contract) => contract.contractType === "hashlock").length;
+  const milestones = active.filter((contract) => contract.contractType === "milestone").length;
   const capitalBase = Math.max(1, outbound + (currentAccount.availableBalance ?? 0));
   const concentration = outbound / capitalBase;
   const longHorizon = allRows.some((row) => row.dueAt > now + 180 * 24 * 60 * 60_000);
-  const risk = Math.min(100, urgent * 20 + hashlocks * 8 + (concentration > .75 ? 20 : concentration > .4 ? 10 : 0) + (longHorizon ? 10 : 0));
+  const approvalLag = allRows.filter((row) => row.contract.contractType === "milestone" && row.contract.status === "locked" && (!(row.creatorApproved) || !(row.beneficiaryApproved))).length;
+  const risk = Math.min(100, urgent * 20 + hashlocks * 8 + milestones * 5 + approvalLag * 6 + (concentration > .75 ? 20 : concentration > .4 ? 10 : 0) + (longHorizon ? 10 : 0));
   $("#contract-outbound").textContent = `${format(outbound)} EC`;
   $("#contract-inbound").textContent = `${format(inbound)} EC`;
   $("#contract-next-flow").textContent = allRows.length ? (allRows[0].dueAt <= now ? "READY NOW" : formatDuration(allRows[0].dueAt - now)) : "—";
@@ -448,21 +608,25 @@ function renderContractIntelligence(contracts = currentContracts) {
   $("#contract-intel-guidance").textContent = !active.length
     ? "No active programmable payments. New contracts will appear here with a deterministic release forecast."
     : urgent
-      ? `${urgent} cash-flow event${urgent === 1 ? " is" : "s are"} due within one hour. Verify hashlock secrets and beneficiary addresses now.`
+      ? `${urgent} cash-flow event${urgent === 1 ? " is" : "s are"} due within one hour. Verify hashlock secrets, milestone approvals, and beneficiary addresses now.`
       : concentration > .75
         ? "Most deployable value is committed to contracts. Keep enough liquid EC available for fees and unexpected operating needs."
-        : `${active.length} active contract${active.length === 1 ? "" : "s"} produce ${allRows.length} forecast cash-flow event${allRows.length === 1 ? "" : "s"}. No immediate deadline pressure is detected.`;
+        : `${active.length} active contract${active.length === 1 ? "" : "s"} produce ${allRows.length} forecast cash-flow event${allRows.length === 1 ? "" : "s"}. ${milestones ? `${milestones} milestone contract${milestones === 1 ? "" : "s"} need joint approval before release.` : "No immediate deadline pressure is detected."}`;
   const filtered = allRows.filter((row) => contractFlowFilter === "all" || row.direction === contractFlowFilter || (contractFlowFilter === "soon" && row.dueAt <= soonThreshold)).slice(0, 40);
   $("#contract-timeline").innerHTML = filtered.length ? filtered.map((row) => {
     const due = row.dueAt <= now;
     const counterparty = row.contract.contractType === "hashlock" && row.kind === "REFUND FALLBACK" ? row.contract.beneficiary : row.direction === "incoming" ? row.contract.creator : row.contract.beneficiary;
     const contact = contacts.find((entry) => entry.address === counterparty);
     const canClaim = row.contract.contractType === "hashlock" && row.contract.status === "locked" && row.contract.beneficiary === wallet.address;
+    const canApprove = row.contract.contractType === "milestone" && row.contract.status === "locked" && (
+      (row.contract.creator === wallet.address && !row.creatorApproved) ||
+      (row.contract.beneficiary === wallet.address && !row.beneficiaryApproved)
+    );
     return `<article class="contract-flow ${row.direction} ${due ? "due" : ""}">
       <time>${due ? "READY NOW" : escapeHtml(formatDuration(row.dueAt - now))}<br>${escapeHtml(new Date(row.dueAt).toLocaleDateString())}</time>
       <div><b>${escapeHtml(row.kind)} · ${escapeHtml(contact?.name || short(counterparty, 9))}</b><p>${escapeHtml(row.detail)} · ${escapeHtml(short(row.contract.address, 10))}</p></div>
       <strong>${row.direction === "incoming" ? "+" : "−"}${escapeHtml(format(row.amount))} EC</strong>
-      ${canClaim ? `<button type="button" data-contract-flow-claim="${escapeHtml(row.contract.address)}">CLAIM</button>` : ""}
+      ${canClaim ? `<button type="button" data-contract-flow-claim="${escapeHtml(row.contract.address)}">CLAIM</button>` : canApprove ? `<button type="button" data-contract-flow-approve="${escapeHtml(row.contract.address)}" data-contract-flow-milestone="${escapeHtml(String(row.installment))}">APPROVE</button>` : ""}
     </article>`;
   }).join("") : '<p class="empty">No contract cash flows match this filter.</p>';
 }
@@ -481,6 +645,7 @@ function renderData(market,status,blocks) {
   $("#book-spread").textContent = market.spreadMicroUsd == null ? "—" : usd(market.spreadMicroUsd / 1_000_000, 6);
   $("#open-orders").textContent = `${market.openOrders ?? 0} OPEN`;
   renderOrderBook(market);
+  renderOrderAssistant(market);
   const priceValues=(market.history.length?market.history:[{priceMicroUsd:market.priceMicroUsd}]).map((entry)=>entry.priceMicroUsd/1_000_000);
   const points=chartPoints(priceValues,720,260,24); $("#price-chart polyline").setAttribute("points",points.line); $("#price-chart .area").setAttribute("d",`${points.path} L 696 236 L 24 236 Z`);
   $("#price-min").textContent=usd(Math.min(...priceValues),6); $("#price-max").textContent=usd(Math.max(...priceValues),6);
@@ -490,6 +655,7 @@ function renderData(market,status,blocks) {
   for (const svg of [$("#price-chart"),$("#load-chart")]) svg.querySelector(".chart-gridlines").innerHTML=[55,115,175,235].map((y)=>`<line x1="24" y1="${y}" x2="696" y2="${y}"></line>`).join("");
   $("#market-history").innerHTML=market.history.length?market.history.slice().reverse().map((entry)=>`<div class="market-row"><span>${usd(entry.priceMicroUsd/1_000_000,6)}</span><b>${escapeHtml(format(entry.amount))} EC / ${usd(entry.usdCents/100,2)}</b><code>${entry.kind === "order_trade" ? "ORDER TRADE" : `BLOCK #${entry.blockHeight}`}</code><time>${relativeTime(entry.timestamp)}</time></div>`).join(""):'<p class="empty">No market purchases yet.</p>';
   renderDataIntelligence(market, status, blocks, priceValues);
+  renderStressLab();
 }
 
 async function refreshPortfolio(market = marketData, status = currentStatus, force = false) {
@@ -502,13 +668,16 @@ async function refreshPortfolio(market = marketData, status = currentStatus, for
   const results = await Promise.all(wallets.map(async (candidate) => {
     try {
       const account = candidate.address === wallet.address ? currentAccount : await api(`/accounts/${candidate.address}`);
-      return { wallet:candidate, account, available:true };
+      const activity = candidate.address === wallet.address ? walletActivity : await api(`/accounts/${candidate.address}/activity?limit=40`);
+      return { wallet:candidate, account, activity:Array.isArray(activity?.activity) ? activity.activity : [], available:true };
     } catch (error) {
-      return { wallet:candidate, account:{ balance:0, availableBalance:0, marketPosition:0, marketLocked:0, pendingOutgoing:0, pendingIncoming:0, insights:{ transactionCount:0 } }, available:false, error:error.message };
+      return { wallet:candidate, account:{ balance:0, availableBalance:0, marketPosition:0, marketLocked:0, pendingOutgoing:0, pendingIncoming:0, insights:{ transactionCount:0 } }, activity:[], available:false, error:error.message };
     }
   }));
   portfolioEntries = results;
   portfolioUpdatedAt = Date.now();
+  portfolioActivityByAddress = Object.fromEntries(results.map((entry) => [entry.wallet.address, entry.activity || []]));
+  portfolioActivityUpdatedAt = Date.now();
   renderPortfolio(market, status);
 }
 
@@ -548,6 +717,34 @@ function renderPortfolio(market = marketData, status = currentStatus) {
   $("#portfolio-health-note").textContent = healthNote;
   $("#portfolio-allocation-bar").innerHTML = enriched.filter((entry) => entry.holdings > 0).map((entry) => `<span class="portfolio-segment" title="${escapeHtml(entry.wallet.name)} ${(entry.holdings / total * 100).toFixed(2)}%" style="width:${entry.holdings / total * 100}%;background:${entry.color}"></span>`).join("");
   const treasuryShare = total && treasury ? treasury.holdings / total : 0;
+  const availableRatio = total ? available / total : 0;
+  const liquidWeight = total ? enriched.filter((entry) => entry.availableBalance > 0).reduce((sum, entry) => sum + entry.availableBalance, 0) / total : 0;
+  const concentrated = largestShare > .75 || treasuryShare > .9;
+  const riskBand = concentrated ? "CONCENTRATED" : availableRatio < .25 ? "TIGHT" : treasuryShare > .65 ? "TREASURY-HEAVY" : "BALANCED";
+  const liquidityBand = availableRatio < .2 ? "LOW LIQUIDITY" : availableRatio < .45 ? "MODERATE" : "HEALTHY";
+  const nextMove = concentrated
+    ? "Consider isolating operating funds into a separate wallet or subwallet."
+    : availableRatio < .25
+      ? "Top up the most active branch before taking on new transfers."
+      : treasuryShare > .65
+        ? "Distribute a little more into operating wallets if you expect regular activity."
+        : "The current mix looks usable; keep monitoring reserve levels.";
+  $("#portfolio-outlook-note").textContent = concentrated
+    ? "Allocation is concentrated enough to deserve a structural review."
+    : availableRatio < .25
+      ? "The portfolio is liquid enough for only cautious new activity."
+      : "The portfolio mix is reasonably balanced right now.";
+  $("#portfolio-risk-band").textContent = riskBand;
+  $("#portfolio-risk-band-note").textContent = concentrated
+    ? `Largest wallet controls ${(largestShare * 100).toFixed(1)}% of holdings.`
+    : treasuryShare > .65
+      ? `Treasury share is ${(treasuryShare * 100).toFixed(1)}%, so the portfolio is still treasury-led.`
+      : "No single branch dominates the local set.";
+  $("#portfolio-liquidity-band").textContent = liquidityBand;
+  $("#portfolio-liquidity-note").textContent = `${(availableRatio * 100).toFixed(1)}% of holdings are immediately available, with ${(liquidWeight * 100).toFixed(1)}% of total holdings in explicitly liquid balances.`;
+  $("#portfolio-next-move").textContent = concentrated ? "SEPARATE FUNDS" : availableRatio < .25 ? "TOP UP BRANCH" : treasuryShare > .65 ? "DISTRIBUTE MORE" : "MONITOR";
+  $("#portfolio-next-move-note").textContent = nextMove;
+  $(".portfolio-outlook")?.classList.toggle("warning", concentrated || availableRatio < .25);
   $("#portfolio-guidance").textContent = treasuryShare > .9
     ? `Genesis treasury represents ${(treasuryShare * 100).toFixed(1)}% of local holdings, which is expected before broader distribution. ${operating.length > 1 ? `Outside treasury, the largest wallet holds ${(operatingLargest * 100).toFixed(1)}% of operating funds.` : "Create or fund another wallet to build an operating allocation."}`
     : largestShare > .75
@@ -564,6 +761,373 @@ function renderPortfolio(market = marketData, status = currentStatus) {
       <button type="button" data-portfolio-wallet="${escapeHtml(entry.wallet.address)}" ${entry.wallet.address === wallet.address ? "disabled" : ""}>${entry.wallet.address === wallet.address ? "ACTIVE" : "OPEN"}</button>
     </article>`;
   }).join("") : '<p class="empty">No local wallets available.</p>';
+  renderRebalancePlanner();
+  renderSubwalletIntelligence(market, status, enriched);
+}
+
+function renderSubwalletIntelligence(market, status, enrichedPortfolio = []) {
+  const entries = enrichedPortfolio.length ? enrichedPortfolio : portfolioEntries.map((entry) => ({
+    ...entry,
+    holdings: Math.max(0, Number(entry.account?.balance || 0) + Number(entry.account?.marketPosition || 0)),
+    availableBalance: Math.max(0, Number(entry.account?.availableBalance || 0)),
+  }));
+  const roots = wallets.filter((candidate) => !candidate.parentAddress);
+  const children = wallets.filter((candidate) => candidate.parentAddress);
+  const groups = new Map();
+  for (const root of roots) {
+    groups.set(root.address, { root, children: [] });
+  }
+  for (const child of children) {
+    const parentKey = child.parentAddress || child.rootAddress;
+    if (!groups.has(parentKey)) groups.set(parentKey, { root: wallets.find((candidate) => candidate.address === parentKey) || child, children: [] });
+    groups.get(parentKey).children.push(child);
+  }
+  const groupStats = [...groups.values()].map((group) => {
+    const rollupAddresses = new Set([group.root.address, ...collectDescendantAddresses(group.root.address, wallets)]);
+    const rollupHoldings = entries.filter((entry) => rollupAddresses.has(entry.wallet.address)).reduce((sum, entry) => sum + entry.holdings, 0);
+    const rollupAvailable = entries.filter((entry) => rollupAddresses.has(entry.wallet.address)).reduce((sum, entry) => sum + entry.availableBalance, 0);
+    return { ...group, rollupAddresses, rollupHoldings, rollupAvailable };
+  }).sort((a, b) => b.rollupHoldings - a.rollupHoldings);
+  const totalHoldings = groupStats.reduce((sum, group) => sum + group.rollupHoldings, 0);
+  const largestGroup = groupStats[0];
+  const rootCount = roots.length;
+  const childCount = children.length;
+  const diversity = totalHoldings ? 1 / groupStats.reduce((sum, group) => sum + (group.rollupHoldings / totalHoldings) ** 2, 0) : 0;
+  const concentration = totalHoldings && largestGroup ? largestGroup.rollupHoldings / totalHoldings : 0;
+  const health = !wallets.length ? "EMPTY" : childCount === 0 ? "FLAT" : concentration > 0.8 ? "CONCENTRATED" : concentration > 0.55 ? "BALANCED" : "DISTRIBUTED";
+  const branchForecasts = groupStats.map((group) => {
+    const seen = group.root.address === wallet?.address ? currentAccount?.insights : portfolioEntries.find((entry) => entry.wallet.address === group.root.address)?.account?.insights;
+    const firstSeen = Number(seen?.firstSeen || 0);
+    const lastActive = Number(seen?.lastActive || 0);
+    const observationDays = firstSeen && lastActive ? Math.max(1, (lastActive - firstSeen) / (24 * 60 * 60_000)) : 7;
+    const sent = Number(seen?.sent || 0);
+    const spendPerDay = sent > 0 ? sent / observationDays : 0;
+    const runwayDays = spendPerDay > 0 ? group.rollupAvailable / spendPerDay : Infinity;
+    return { ...group, spendPerDay, runwayDays, observationDays };
+  }).sort((a, b) => a.runwayDays - b.runwayDays || b.rollupHoldings - a.rollupHoldings);
+  $("#subwallet-roots").textContent = String(rootCount);
+  $("#subwallet-roots-note").textContent = rootCount ? `${groupStats.length} hierarchy group${groupStats.length === 1 ? "" : "s"} detected.` : "Create a root wallet to begin.";
+  $("#subwallet-children").textContent = String(childCount);
+  $("#subwallet-children-note").textContent = childCount ? `${childCount} child wallet${childCount === 1 ? "" : "s"} visible in the tree.` : "No subwallets yet.";
+  $("#subwallet-share").textContent = totalHoldings ? `${(concentration * 100).toFixed(1)}%` : "—";
+  $("#subwallet-share-note").textContent = totalHoldings && largestGroup ? `${largestGroup.root.name} controls the largest rollup.` : "Rollups will appear once wallets are funded.";
+  $("#subwallet-health").textContent = health;
+  $("#subwallet-health-note").textContent = !wallets.length ? "Add or import wallets to unlock hierarchy intelligence." : health === "CONCENTRATED" ? "Funds are tightly clustered in one branch." : health === "BALANCED" ? "Value is split across several branches." : "Multiple branches are carrying value.";
+  $("#subwallet-summary").textContent = totalHoldings
+    ? `${groupStats.length} branch${groupStats.length === 1 ? "" : "es"} hold ${format(totalHoldings)} EC in aggregate. The largest branch carries ${(concentration * 100).toFixed(1)}% of hierarchical holdings, and the hierarchy averages ${diversity.toFixed(2)} effective branches.`
+    : "Subwallet analytics will summarize how value is distributed across roots and descendants.";
+  const activeChildren = wallets.filter((candidate) => candidate.parentAddress === wallet?.address);
+  $("#subwallet-next-action").textContent = activeChildren.length
+    ? `${activeChildren.length} immediate child wallet${activeChildren.length === 1 ? "" : "s"} available. Use the tree to load a transfer to one of them in a single click.`
+    : "Create a subwallet under the active wallet to start a managed branch.";
+  const shortestRunway = branchForecasts[0];
+  $("#subwallet-chart-summary").textContent = shortestRunway
+    ? shortestRunway.runwayDays === Infinity
+      ? `${shortestRunway.root.name} has no measurable spend pattern yet, so its runway is effectively open-ended for now.`
+      : `${shortestRunway.root.name} has the shortest estimated runway at ${shortestRunway.runwayDays.toFixed(1)} days.`
+    : "Projected operating runway by wallet branch.";
+  renderSubwalletRunwayChart(branchForecasts);
+  renderSubwalletAllocator(entries);
+  renderSubwalletTrends(branchForecasts, entries);
+}
+
+function renderSubwalletRunwayChart(branchForecasts) {
+  const svg = $("#subwallet-chart");
+  if (!svg) return;
+  const values = branchForecasts.slice(0, 8).map((branch) => Number.isFinite(branch.runwayDays) ? Math.max(0.5, branch.runwayDays) : 24);
+  if (!values.length) {
+    svg.querySelector(".chart-gridlines").innerHTML = "";
+    svg.querySelector("polyline").setAttribute("points", "");
+    svg.querySelector(".area").setAttribute("d", "");
+    return;
+  }
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, max);
+  const points = chartPoints(values, 760, 220, 28);
+  svg.querySelector(".chart-gridlines").innerHTML = [48, 92, 136, 180].map((y) => `<line x1="28" y1="${y}" x2="732" y2="${y}"></line>`).join("");
+  svg.querySelector("polyline").setAttribute("points", points.line);
+  svg.querySelector(".area").setAttribute("d", `${points.path} L 732 192 L 28 192 Z`);
+  const labels = branchForecasts.slice(0, 8).map((branch, index) => `${short(branch.root.name, 12)} · ${Number.isFinite(branch.runwayDays) ? branch.runwayDays.toFixed(1) + "d" : "∞"}`);
+  svg.setAttribute("aria-label", `Branch runway: ${labels.join(", ")}`);
+}
+
+function estimateSubwalletReserve(entry) {
+  const txCount = Math.max(1, Number(entry.account?.insights?.transactionCount || 0));
+  const sent = Number(entry.account?.insights?.sent || 0);
+  const outgoingAverage = sent > 0 ? sent / txCount : 0;
+  const activityFloor = outgoingAverage > 0 ? Math.max(3 * SCALE, Math.round(outgoingAverage * 2.5)) : 5 * SCALE;
+  return Math.max(3 * SCALE, Math.min(50 * SCALE, activityFloor));
+}
+
+function renderSubwalletAllocator(entries = []) {
+  const list = $("#subwallet-allocator-list");
+  const summary = $("#subwallet-allocator-summary");
+  if (!list || !summary) return;
+  const enriched = entries.length ? entries : portfolioEntries.map((entry) => ({
+    ...entry,
+    holdings: Math.max(0, Number(entry.account?.balance || 0) + Number(entry.account?.marketPosition || 0)),
+    availableBalance: Math.max(0, Number(entry.account?.availableBalance || 0)),
+  }));
+  const rows = [];
+  for (const child of wallets.filter((candidate) => candidate.parentAddress)) {
+    const parent = wallets.find((candidate) => candidate.address === child.parentAddress) || wallets.find((candidate) => candidate.address === child.rootAddress);
+    if (!parent) continue;
+    const parentEntry = enriched.find((entry) => entry.wallet.address === parent.address);
+    const childEntry = enriched.find((entry) => entry.wallet.address === child.address);
+    if (!parentEntry || !childEntry) continue;
+    const targetReserve = estimateSubwalletReserve(childEntry);
+    const currentAvailable = Number(childEntry.availableBalance || 0);
+    const deficit = Math.max(0, targetReserve - currentAvailable);
+    const parentAvailable = Number(parentEntry.availableBalance || 0);
+    if (deficit < SCALE || parentAvailable <= deficit + activeFee) continue;
+    const urgency = Math.min(100, Math.round((deficit / targetReserve) * 100));
+    rows.push({
+      child,
+      parent,
+      amount: deficit,
+      targetReserve,
+      urgency,
+      note: currentAvailable === 0
+        ? "No available balance. This branch should be replenished before it is used again."
+        : `Available balance is ${(currentAvailable / SCALE).toFixed(2)} EC against a ${ (targetReserve / SCALE).toFixed(2)} EC reserve target.`,
+    });
+  }
+  rows.sort((a, b) => b.urgency - a.urgency);
+  summary.textContent = rows.length
+    ? `${rows.length} child wallet${rows.length === 1 ? "" : "s"} are below their suggested reserve target.`
+    : "No branch top-ups are currently recommended.";
+  list.innerHTML = rows.length ? rows.map((plan) => `
+    <article class="subwallet-plan ${plan.urgency >= 80 ? "urgent" : plan.urgency >= 50 ? "warning" : ""}">
+      <div>
+        <b>${escapeHtml(plan.parent.name)} → ${escapeHtml(plan.child.name)}</b>
+        <p>${escapeHtml((plan.amount / SCALE).toFixed(6))} EC suggested top-up · reserve target ${(plan.targetReserve / SCALE).toFixed(2)} EC</p>
+        <small>${escapeHtml(plan.note)} · urgency ${plan.urgency}/100</small>
+      </div>
+      <button type="button" data-subwallet-topup-parent="${escapeHtml(plan.parent.address)}" data-subwallet-topup-child="${escapeHtml(plan.child.address)}" data-subwallet-topup-amount="${escapeHtml(String(plan.amount / SCALE))}">PREPARE</button>
+    </article>
+  `).join("") : '<div class="subwallet-plan empty">Every child wallet is already at or above its reserve target.</div>';
+}
+
+function summarizeBranchTrend(branch, entriesByAddress = new Map()) {
+  const windowMs = 7 * 24 * 60 * 60_000;
+  const addressSet = branch.rollupAddresses instanceof Set ? branch.rollupAddresses : new Set(branch.rollupAddresses || []);
+  const seenTx = new Set();
+  const activity = [];
+  for (const address of addressSet) {
+    for (const tx of portfolioActivityByAddress[address] || []) {
+      const key = tx?.id || `${tx?.from || ""}:${tx?.to || ""}:${tx?.amount || 0}:${tx?.settledAt || tx?.timestamp || 0}`;
+      if (seenTx.has(key)) continue;
+      seenTx.add(key);
+      activity.push(tx);
+    }
+  }
+  let recentOutflow = 0;
+  let previousOutflow = 0;
+  let recentInflow = 0;
+  let previousInflow = 0;
+  let recentCount = 0;
+  let previousCount = 0;
+  for (const tx of activity) {
+    const settledAt = Number(tx.settledAt || tx.timestamp || 0);
+    if (!settledAt) continue;
+    const age = Date.now() - settledAt;
+    const amount = Math.max(0, Number(tx.amount || 0));
+    const fromInside = addressSet.has(tx.from);
+    const toInside = addressSet.has(tx.to);
+    const externalOutflow = fromInside && !toInside;
+    const externalInflow = !fromInside && toInside;
+    if (!externalOutflow && !externalInflow) continue;
+    if (age <= windowMs) {
+      recentCount++;
+      if (externalOutflow) recentOutflow += amount;
+      if (externalInflow) recentInflow += amount;
+    } else if (age <= 2 * windowMs) {
+      previousCount++;
+      if (externalOutflow) previousOutflow += amount;
+      if (externalInflow) previousInflow += amount;
+    }
+  }
+  const recentBurnRate = recentOutflow / 7;
+  const previousBurnRate = previousOutflow / 7;
+  const runwayDays = recentBurnRate > 0 ? branch.rollupAvailable / recentBurnRate : Infinity;
+  const burnAcceleration = previousBurnRate > 0 ? recentBurnRate / previousBurnRate : recentBurnRate > 0 ? Infinity : 1;
+  const outflowDelta = recentOutflow - previousOutflow;
+  const trend = recentBurnRate === 0 && previousBurnRate === 0
+    ? "idle"
+    : burnAcceleration > 1.25 || outflowDelta > SCALE
+      ? "rising"
+      : burnAcceleration < 0.8
+        ? "cooling"
+        : "stable";
+  const directChildren = branch.children
+    .map((child) => entriesByAddress.get(child.address))
+    .filter(Boolean)
+    .map((entry) => {
+      const targetReserve = estimateSubwalletReserve(entry);
+      const deficit = Math.max(0, targetReserve - Number(entry.availableBalance || 0));
+      return { entry, targetReserve, deficit };
+    })
+    .filter((candidate) => candidate.deficit >= SCALE)
+    .sort((a, b) => b.deficit - a.deficit || a.entry.wallet.name.localeCompare(b.entry.wallet.name));
+  let action = null;
+  if (directChildren.length) {
+    const candidate = directChildren[0];
+    action = {
+      parentAddress: branch.root.address,
+      childAddress: candidate.entry.wallet.address,
+      amountEc: candidate.deficit / SCALE,
+      label: `Top up ${candidate.entry.wallet.name}`,
+    };
+  } else if (branch.root.parentAddress) {
+    const rootEntry = entriesByAddress.get(branch.root.address);
+    if (rootEntry) {
+      const targetReserve = estimateSubwalletReserve(rootEntry);
+      const deficit = Math.max(0, targetReserve - Number(rootEntry.availableBalance || 0));
+      if (deficit >= SCALE) {
+        action = {
+          parentAddress: branch.root.parentAddress,
+          childAddress: branch.root.address,
+          amountEc: deficit / SCALE,
+          label: `Top up ${branch.root.name}`,
+        };
+      }
+    }
+  }
+  const urgency = !Number.isFinite(runwayDays)
+    ? 5
+    : runwayDays < 3
+      ? 100
+      : runwayDays < 7
+        ? 82
+        : runwayDays < 14
+          ? 64
+          : 35;
+  return {
+    ...branch,
+    recentOutflow,
+    previousOutflow,
+    recentInflow,
+    previousInflow,
+    recentCount,
+    previousCount,
+    recentBurnRate,
+    previousBurnRate,
+    runwayDays,
+    burnAcceleration,
+    trend,
+    outflowDelta,
+    action,
+    urgency,
+  };
+}
+
+function renderSubwalletTrends(branchForecasts = [], entries = []) {
+  const list = $("#subwallet-trend-list");
+  const summary = $("#subwallet-trend-summary");
+  if (!list || !summary) return;
+  const entriesByAddress = new Map(entries.map((entry) => [entry.wallet.address, entry]));
+  const rows = branchForecasts
+    .map((branch) => summarizeBranchTrend(branch, entriesByAddress))
+    .sort((a, b) => b.urgency - a.urgency || a.root.name.localeCompare(b.root.name));
+  const actionable = rows.filter((branch) => branch.action);
+  const warningCount = rows.filter((branch) => branch.trend === "rising" || (Number.isFinite(branch.runwayDays) && branch.runwayDays < 7)).length;
+  summary.textContent = rows.length
+    ? `${warningCount} branch${warningCount === 1 ? "" : "es"} need attention. ${actionable.length} top-up${actionable.length === 1 ? "" : "s"} can be prepared directly from the trend view.`
+    : "Branch outflow trend over the last 14 days.";
+  list.innerHTML = rows.length ? rows.slice(0, 6).map((branch) => {
+    const trendLabel = branch.trend === "rising"
+      ? "RISING SPEND"
+      : branch.trend === "cooling"
+        ? "COOLING"
+        : branch.trend === "idle"
+          ? "IDLE"
+          : "STABLE";
+    const tone = branch.trend === "rising" || (Number.isFinite(branch.runwayDays) && branch.runwayDays < 7) ? "warning" : "good";
+    const runwayText = branch.runwayDays === Infinity ? "open runway" : `${branch.runwayDays.toFixed(1)} day runway`;
+    const activityText = `${format(branch.recentOutflow)} EC outflow · ${format(branch.previousOutflow)} EC prior window · ${branch.recentCount} / ${branch.previousCount} tx`;
+    const actionButton = branch.action
+      ? `<button type="button" data-subwallet-topup-parent="${escapeHtml(branch.action.parentAddress)}" data-subwallet-topup-child="${escapeHtml(branch.action.childAddress)}" data-subwallet-topup-amount="${escapeHtml(String(branch.action.amountEc))}">${escapeHtml(branch.action.label)}</button>`
+      : `<button type="button" data-wallet-open="${escapeHtml(branch.root.address)}">OPEN BRANCH</button>`;
+    return `<article class="subwallet-trend ${tone}">
+      <div>
+        <b>${escapeHtml(branch.root.name)}</b>
+        <p>${escapeHtml(trendLabel)} · ${escapeHtml(runwayText)} · ${escapeHtml(activityText)}</p>
+        <small>${escapeHtml(branch.children.length)} child wallet${branch.children.length === 1 ? "" : "s"} · burn acceleration ${Number.isFinite(branch.burnAcceleration) ? branch.burnAcceleration.toFixed(2) + "x" : "∞"}</small>
+      </div>
+      ${actionButton}
+    </article>`;
+  }).join("") : '<div class="subwallet-trend empty">No branch activity has been recorded yet.</div>';
+}
+
+function collectDescendantAddresses(rootAddress, allWallets) {
+  const directChildren = allWallets.filter((walletEntry) => walletEntry.parentAddress === rootAddress);
+  const descendants = [];
+  for (const child of directChildren) {
+    descendants.push(child.address, ...collectDescendantAddresses(child.address, allWallets));
+  }
+  return descendants;
+}
+
+function buildRebalancePlan() {
+  const treasuryAddress = currentStatus?.treasuryAddress;
+  const fee = Math.max(1_000, Number(feeQuote.standard) || activeFee);
+  const minimum = Math.max(1, Math.round(rebalanceConfig.minimumEc * SCALE));
+  const floor = Math.max(0, Math.round(rebalanceConfig.floorEc * SCALE));
+  const buffer = Math.max(0, Math.round(rebalanceConfig.bufferEc * SCALE));
+  const walletsToModel = portfolioEntries.filter((entry) => entry.available && (rebalanceConfig.includeTreasury || entry.wallet.address !== treasuryAddress)).map((entry) => ({
+    address:entry.wallet.address,
+    name:entry.wallet.name,
+    balance:Math.max(0, Number(entry.account.availableBalance || 0)),
+  }));
+  return planRebalance({ wallets:walletsToModel, strategy:rebalanceConfig.strategy, floor, buffer, minimum, fee });
+}
+
+function renderRebalancePlanner() {
+  if (!$("#rebalance-list")) return;
+  $("#rebalance-strategy").value = rebalanceConfig.strategy;
+  $("#rebalance-floor").value = String(rebalanceConfig.floorEc);
+  $("#rebalance-buffer").value = String(rebalanceConfig.bufferEc);
+  $("#rebalance-minimum").value = String(rebalanceConfig.minimumEc);
+  $("#rebalance-treasury").checked = rebalanceConfig.includeTreasury;
+  const result = buildRebalancePlan();
+  rebalancePlan = result.moves;
+  const insufficient = result.wallets.length < 2;
+  const status = insufficient ? "NEED 2 WALLETS" : result.moves.length ? "READY" : result.belowFloor ? "UNDERFUNDED" : "BALANCED";
+  $("#rebalance-count").textContent = String(result.moves.length);
+  $("#rebalance-fees").textContent = `${format(result.fees)} EC estimated fees`;
+  $("#rebalance-volume").textContent = `${format(result.volume)} EC`;
+  $("#rebalance-wallet-count").textContent = `${result.wallets.length} wallet${result.wallets.length === 1 ? "" : "s"} modeled`;
+  $("#rebalance-before").textContent = result.total ? `${(result.beforeLargest * 100).toFixed(1)}%` : "—";
+  $("#rebalance-after").textContent = result.total ? `${(result.afterLargest * 100).toFixed(1)}% after plan` : "—";
+  $("#rebalance-status").textContent = status;
+  $("#rebalance-guidance").textContent = insufficient
+    ? `At least two eligible wallets are needed. The genesis treasury is ${rebalanceConfig.includeTreasury ? "included" : "excluded by default for safety"}.`
+    : result.moves.length
+      ? `${result.moves.length} transfer${result.moves.length === 1 ? "" : "s"} moves ${format(result.volume)} EC with ${format(result.fees)} EC in estimated fees. Recommendations are drafts and still pass through Transaction Guard.`
+      : result.belowFloor
+        ? `${result.belowFloor} wallet${result.belowFloor === 1 ? " remains" : "s remain"} below the reserve floor, but eligible sources cannot fund them without violating the source buffer.`
+        : rebalanceConfig.strategy === "equal" ? "Eligible wallets are already within the configured minimum-move tolerance." : "Every eligible wallet meets the configured reserve floor.";
+  $("#rebalance-list").innerHTML = result.moves.length ? result.moves.map((move, index) => `<article class="rebalance-move">
+    <span>${index + 1}</span>
+    <div><b>${escapeHtml(move.fromName)} → ${escapeHtml(move.toName)}</b><p>${escapeHtml(short(move.from, 9))} → ${escapeHtml(short(move.to, 9))} · fee ${escapeHtml(format(move.fee))} EC</p></div>
+    <strong>${escapeHtml(format(move.amount))} EC</strong>
+    <button type="button" data-rebalance-load="${index}">LOAD</button>
+  </article>`).join("") : '<p class="empty">No rebalancing moves proposed.</p>';
+  $("#rebalance-copy").disabled = !result.moves.length;
+  $("#rebalance-load-next").disabled = !result.moves.length;
+  $(".rebalance-panel").classList.toggle("warning", status === "UNDERFUNDED");
+}
+
+async function loadRebalanceMove(move) {
+  if (!move) return;
+  await activateWallet(move.from);
+  $("#recipient").value = move.to;
+  $("#amount").value = (move.amount / SCALE).toFixed(6);
+  $("#memo").value = `Portfolio rebalance to ${move.toName}`.slice(0, 96);
+  updateComposer();
+  document.querySelector('[data-view="wallet"]').click();
+  $("#send-form").scrollIntoView({ behavior:"smooth", block:"start" });
+  toast(`Loaded ${format(move.amount)} EC from ${move.fromName} to ${move.toName}`);
 }
 
 function renderOrderBook(market) {
@@ -592,7 +1156,7 @@ function renderWalletIntel(status, account, contracts, market) {
   const pressureLabel = networkPressureLabel(feeQuote.pressure);
   const recommendedTier = recommendedFeeTier(feeQuote.pressure);
   const safeSpend = smartReserveAmount();
-  const lockedContracts = contracts.filter((contract) => contract.creator === wallet.address && ["locked", "vesting", "hashlock"].includes(contract.status)).length;
+  const lockedContracts = contracts.filter((contract) => contract.creator === wallet.address && ["locked", "vesting", "milestone", "hashlock"].includes(contract.status)).length;
   const suggestions = buildWalletSuggestions(status, account, contracts, market, safeSpend, pressureLabel, recommendedTier, lockedContracts);
   const topCounterparties = (account.insights.topCounterparties ?? []).slice(0, 3).map((entry) => short(entry.address, 8)).join(" · ") || "NONE";
   const nextEvent = summarizeNextEvent(contracts);
@@ -713,6 +1277,156 @@ function renderWalletActions(suggestions) {
     </article>`).join("");
 }
 
+function analyzeMarketRegime(market, status, priceValues) {
+  const momentum = summarizeMomentum(priceValues);
+  const price = Number(market.priceUsd || 0);
+  const spreadUsd = Number(market.spreadMicroUsd || 0) / 1_000_000;
+  const spreadRatio = price > 0 ? spreadUsd / price : 0;
+  const openOrders = Number(market.openOrders || 0);
+  const pressure = Number(feeQuote.pressure || 0);
+  if (!status?.chainValid) {
+    return { label: "DEGRADED", note: "Chain validation is failing, so quotes should be treated as provisional until the ledger is healthy again.", tactic: "Pause trading", confidence: "Low confidence" };
+  }
+  if (spreadRatio > 0.03) {
+    return { label: "WIDE SPREAD", note: "Liquidity is thin enough that passive limit orders usually beat urgency.", tactic: "Join the book", confidence: "Medium confidence" };
+  }
+  if (momentum.delta > 3 && openOrders > 8) {
+    return { label: "UPTREND", note: "Momentum is positive and the book has enough depth to support staged entries.", tactic: "Buy in slices", confidence: "High confidence" };
+  }
+  if (momentum.delta < -3 && openOrders > 8) {
+    return { label: "SOFTENING", note: "Price action is weaker, so tighter limits and patience help protect execution quality.", tactic: "Sell with limits", confidence: "High confidence" };
+  }
+  if (pressure > 0.75) {
+    return { label: "FEE PRESSURE", note: "The network queue is busy, so conservative sizing and patience reduce execution surprises.", tactic: "Use smaller orders", confidence: "Medium confidence" };
+  }
+  if (openOrders > 12) {
+    return { label: "ACTIVE BOOK", note: "Depth is healthy enough to improve fills by joining the best bid or ask.", tactic: "Match best prices", confidence: "High confidence" };
+  }
+  return { label: "BALANCED", note: "Price, depth, and queue pressure are all in a middle ground that favors clean limit orders.", tactic: "Use mid-market limits", confidence: "Medium confidence" };
+}
+
+function buildExecutionForecast(market, side, amountEc, limitPrice = null) {
+  const price = Number(market?.priceUsd || 0);
+  const book = side === "buy" ? (market?.orderBook?.asks || []) : (market?.orderBook?.bids || []);
+  const amount = Math.max(0, Number(amountEc) || 0);
+  if (!amount || !book.length || !price) {
+    return {
+      fillable: 0,
+      avgPrice: price || 0,
+      impactPct: 0,
+      route: "NO LIQUIDITY",
+      steps: [],
+      fillPct: 0,
+      partial: true,
+    };
+  }
+  let remaining = amount;
+  let notional = 0;
+  let fillable = 0;
+  const steps = [];
+  for (const level of book) {
+    const levelPrice = Number(level.limitPriceMicroUsd || level.priceMicroUsd || 0) / 1_000_000;
+    const levelAmount = Math.max(0, Number(level.amount || 0));
+    if (!levelPrice || !levelAmount) continue;
+    if (limitPrice != null) {
+      if (side === "buy" && levelPrice > limitPrice) break;
+      if (side === "sell" && levelPrice < limitPrice) break;
+    }
+    const take = Math.min(remaining, levelAmount);
+    if (take <= 0) continue;
+    steps.push({ price: levelPrice, amount: take, orders: Number(level.orders || 0) });
+    fillable += take;
+    notional += take * levelPrice;
+    remaining -= take;
+    if (remaining <= 0) break;
+  }
+  const avgPrice = fillable > 0 ? notional / fillable : price;
+  const impactPct = price > 0 ? Math.max(0, ((side === "buy" ? avgPrice - price : price - avgPrice) / price) * 100) : 0;
+  const fillPct = amount > 0 ? (fillable / amount) * 100 : 0;
+  const route = fillPct >= 99 ? "FULL FILL" : fillPct >= 50 ? "PARTIAL FILL" : "THIN BOOK";
+  return {
+    fillable,
+    avgPrice,
+    impactPct,
+    route,
+    steps,
+    fillPct,
+    partial: fillable < amount,
+  };
+}
+
+function renderOrderAssistant(market) {
+  const mode = $("#order-assistant-mode");
+  if (!mode) return;
+  const usd = (value) => value.toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 6, maximumFractionDigits: 6 });
+  const side = $("#order-side")?.value === "sell" ? "sell" : "buy";
+  const price = Number(market?.priceUsd || 0);
+  const bestBid = Number(market?.bestBid?.limitPriceMicroUsd || 0) / 1_000_000 || price;
+  const bestAsk = Number(market?.bestAsk?.limitPriceMicroUsd || 0) / 1_000_000 || price;
+  const spread = Number(market?.spreadMicroUsd || 0) / 1_000_000;
+  const spreadRatio = price > 0 ? spread / price : 0;
+  const openOrders = Number(market?.openOrders || 0);
+  const available = Math.max(0, Number(currentAccount?.availableBalance || 0));
+  const aggressive = spreadRatio <= 0.01 || openOrders > 12;
+  const recommendedPrice = side === "buy"
+    ? (aggressive ? bestAsk || price : Math.min(bestAsk || price, bestBid + Math.max(spread * 0.35, price * 0.001)))
+    : (aggressive ? bestBid || price : Math.max(bestBid || price, bestAsk - Math.max(spread * 0.35, price * 0.001)));
+  const recommendedAmount = side === "sell"
+    ? Math.max(0, Math.min(available, Math.max(SCALE, Math.round(available * 0.1))))
+    : Math.max(SCALE, Math.min(5 * SCALE, Math.round(Math.max(SCALE, ((openOrders || 1) * SCALE) / 2))));
+  const execution = buildExecutionForecast(market, side, recommendedAmount / SCALE, recommendedPrice || price);
+  const tactic = side === "buy"
+    ? aggressive ? "BUY AT ASK" : "POST NEAR BID"
+    : aggressive ? "SELL AT BID" : "POST NEAR ASK";
+  const fillConfidence = recommendedAmount > 0 ? (execution.fillPct >= 95 ? "HIGH" : execution.fillPct >= 60 ? "MEDIUM" : "LOW") : "NONE";
+  const priceNote = side === "buy"
+    ? aggressive ? "This should prioritize execution." : "This leaves room for a better entry if price moves down."
+    : aggressive ? "This should improve fill speed." : "This preserves more price control on the exit.";
+  const sizeNote = side === "sell"
+    ? available > 0 ? `About 10% of ${format(available)} EC available, leaving reserve balance untouched.` : "No available balance to sell right now."
+    : "A small staged entry keeps the order readable and easy to manage.";
+  const routeNote = execution.partial
+    ? `${execution.route.toLowerCase()} across ${execution.steps.length} price level${execution.steps.length === 1 ? "" : "s"}.`
+    : `Projected full fill across ${execution.steps.length} level${execution.steps.length === 1 ? "" : "s"}.`;
+  mode.textContent = `${side.toUpperCase()} · ${aggressive ? "AGGRESSIVE" : "CAUTIOUS"}`;
+  $("#order-assistant-tactic").textContent = tactic;
+  $("#order-assistant-tactic-note").textContent = aggressive ? "Priority on speed and match likelihood." : "Priority on price control and flexibility.";
+  $("#order-assistant-price").textContent = recommendedPrice > 0 ? usd(recommendedPrice) : "—";
+  $("#order-assistant-price-note").textContent = priceNote;
+  $("#order-assistant-size").textContent = recommendedAmount > 0 ? `${format(recommendedAmount)} EC` : "—";
+  $("#order-assistant-size-note").textContent = sizeNote;
+  $("#order-assistant-fill").textContent = fillConfidence;
+  $("#order-assistant-fill-note").textContent = `${execution.fillPct.toFixed(0)}% of the recommended size appears fillable from visible depth.`;
+  $("#order-execution-note").textContent = `${side.toUpperCase()} ${execution.partial ? "likely needs a ladder" : "can likely clear the visible book"} · ${routeNote}`;
+  $("#order-execution-fill").textContent = `${execution.fillPct.toFixed(0)}%`;
+  $("#order-execution-fill-note").textContent = `${format(execution.fillable)} EC of ${format(recommendedAmount / SCALE)} EC visible in current depth.`;
+  $("#order-execution-impact").textContent = execution.impactPct > 0 ? `${execution.impactPct.toFixed(2)}%` : "—";
+  $("#order-execution-impact-note").textContent = execution.impactPct > 0 ? `Estimated avg fill at ${usd(execution.avgPrice, 6)}.` : "No measurable impact because the recommended size is not crossing visible levels.";
+  $("#order-execution-route").textContent = execution.route;
+  $("#order-execution-route-note").textContent = `${execution.steps.length} level${execution.steps.length === 1 ? "" : "s"} mapped from the visible book.`;
+  $("#order-execution-ladder").innerHTML = execution.steps.length ? execution.steps.map((step, index) => `
+    <article class="order-execution-step ${index === 0 ? "good" : ""}">
+      <strong>#${index + 1}</strong>
+      <div>
+        <p>${escapeHtml(format(step.amount))} EC @ ${escapeHtml(usd(step.price, 6))}</p>
+        <small>${escapeHtml(String(step.orders || 0))} order${step.orders === 1 ? "" : "s"} at this level</small>
+      </div>
+      <small>${escapeHtml(((step.amount / Math.max(recommendedAmount / SCALE, 1)) * 100).toFixed(0))}% of plan</small>
+    </article>
+  `).join("") : '<p class="empty">No visible depth to build a ladder.</p>';
+  $("#order-assistant-apply").onclick = () => {
+    $("#order-side").value = side;
+    if (recommendedPrice > 0) $("#order-price").value = recommendedPrice.toFixed(6);
+    if (recommendedAmount > 0) $("#order-amount").value = (recommendedAmount / SCALE).toFixed(6);
+    toast("Order recommendation applied");
+  };
+  $("#order-assistant-mid").onclick = () => {
+    if (price > 0) $("#order-price").value = price.toFixed(6);
+    $("#order-side").value = side;
+    toast("Mid price loaded");
+  };
+}
+
 function loadWatchlist() {
   watchlist = [...new Set((JSON.parse(localStorage.getItem(watchlistKey)) || []))]
     .filter((address) => /^ec1[0-9a-f]{38}$/.test(address));
@@ -779,6 +1493,23 @@ function saveSessionSecurity() {
   localStorage.setItem(sessionSecurityKey, JSON.stringify(sessionSecurity));
 }
 
+function loadSecurityJournal() {
+  try {
+    securityJournalByWallet = JSON.parse(localStorage.getItem(securityJournalKey) || "{}") || {};
+  } catch {
+    securityJournalByWallet = {};
+  }
+  securityJournal = Array.isArray(securityJournalByWallet[wallet?.address])
+    ? securityJournalByWallet[wallet.address].filter((entry) => entry && typeof entry.type === "string" && typeof entry.title === "string" && Number.isFinite(Number(entry.timestamp))).slice(0, 24)
+    : [];
+}
+
+function saveSecurityJournal() {
+  if (!wallet?.address) return;
+  securityJournalByWallet[wallet.address] = securityJournal.slice(0, 24);
+  localStorage.setItem(securityJournalKey, JSON.stringify(securityJournalByWallet));
+}
+
 function loadMarketAlerts() {
   try {
     marketAlerts = (JSON.parse(localStorage.getItem(marketAlertsKey) || "[]") || [])
@@ -816,6 +1547,39 @@ function loadPaymentPlans() {
   paymentPlans = Array.isArray(paymentPlansByWallet[wallet?.address]) ? paymentPlansByWallet[wallet.address] : [];
 }
 
+function loadStressScenario() {
+  try {
+    stressScenariosByWallet = JSON.parse(localStorage.getItem(stressScenarioKey) || "{}") || {};
+  } catch {
+    stressScenariosByWallet = {};
+  }
+  const stored = stressScenariosByWallet[wallet?.address] || {};
+  stressScenario = {
+    horizonDays: [7, 30, 90, 180].includes(Number(stored.horizonDays)) ? Number(stored.horizonDays) : 30,
+    priceShockPct: Number.isFinite(Number(stored.priceShockPct)) ? Math.max(-95, Math.min(300, Number(stored.priceShockPct))) : -35,
+    extraSpendEc: Math.max(0, Number(stored.extraSpendEc) || 0),
+    includeHistory: stored.includeHistory !== false,
+  };
+}
+
+function loadRebalanceConfig() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(rebalanceConfigKey) || "{}") || {};
+    const storedFloor = Number(stored.floorEc);
+    const storedBuffer = Number(stored.bufferEc);
+    const storedMinimum = Number(stored.minimumEc);
+    rebalanceConfig = {
+      strategy:["equal", "floor"].includes(stored.strategy) ? stored.strategy : "equal",
+      floorEc:Number.isFinite(storedFloor) ? Math.max(0, storedFloor) : 25,
+      bufferEc:Number.isFinite(storedBuffer) ? Math.max(0, storedBuffer) : 5,
+      minimumEc:Number.isFinite(storedMinimum) ? Math.max(.000001, storedMinimum) : .01,
+      includeTreasury:Boolean(stored.includeTreasury),
+    };
+  } catch {
+    rebalanceConfig = { strategy:"equal", floorEc:25, bufferEc:5, minimumEc:.01, includeTreasury:false };
+  }
+}
+
 function loadPaymentRequests() {
   try {
     paymentRequestsByWallet = JSON.parse(localStorage.getItem(paymentRequestsKey) || "{}") || {};
@@ -825,6 +1589,22 @@ function loadPaymentRequests() {
   paymentRequests = Array.isArray(paymentRequestsByWallet[wallet?.address])
     ? paymentRequestsByWallet[wallet.address].filter((request) => request && typeof request.label === "string" && typeof request.address === "string" && /^ec1[0-9a-f]{38}$/.test(request.address))
     : [];
+}
+
+function loadActivityRules() {
+  try {
+    walletActivityRulesByWallet = JSON.parse(localStorage.getItem(activityRulesKey) || "{}") || {};
+  } catch {
+    walletActivityRulesByWallet = {};
+  }
+  const stored = walletActivityRulesByWallet[wallet?.address] || {};
+  walletActivityRules = {
+    largeTransferEc: Number.isFinite(Number(stored.largeTransferEc)) && Number(stored.largeTransferEc) > 0 ? Number(stored.largeTransferEc) : 10,
+    burstCount: Number.isFinite(Number(stored.burstCount)) && Number(stored.burstCount) >= 2 ? Math.round(Number(stored.burstCount)) : 4,
+    burstWindowHours: Number.isFinite(Number(stored.burstWindowHours)) && Number(stored.burstWindowHours) > 0 ? Math.min(168, Number(stored.burstWindowHours)) : 24,
+    watchNewCounterparties: stored.watchNewCounterparties !== false,
+    watchTopCounterparties: stored.watchTopCounterparties !== false,
+  };
 }
 
 function saveWatchlist() {
@@ -885,10 +1665,32 @@ function savePaymentPlans() {
   localStorage.setItem(paymentPlansKey, JSON.stringify(paymentPlansByWallet));
 }
 
+function saveStressScenario() {
+  if (!wallet?.address) return;
+  stressScenariosByWallet[wallet.address] = { ...stressScenario };
+  localStorage.setItem(stressScenarioKey, JSON.stringify(stressScenariosByWallet));
+}
+
+function saveRebalanceConfig() {
+  localStorage.setItem(rebalanceConfigKey, JSON.stringify(rebalanceConfig));
+}
+
 function savePaymentRequests() {
   if (!wallet?.address) return;
   paymentRequestsByWallet[wallet.address] = paymentRequests.slice(0, 24);
   localStorage.setItem(paymentRequestsKey, JSON.stringify(paymentRequestsByWallet));
+}
+
+function saveActivityRules() {
+  if (!wallet?.address) return;
+  walletActivityRulesByWallet[wallet.address] = {
+    largeTransferEc: Number(walletActivityRules.largeTransferEc) || 10,
+    burstCount: Math.round(Number(walletActivityRules.burstCount) || 4),
+    burstWindowHours: Math.min(168, Math.max(1, Number(walletActivityRules.burstWindowHours) || 24)),
+    watchNewCounterparties: Boolean(walletActivityRules.watchNewCounterparties),
+    watchTopCounterparties: Boolean(walletActivityRules.watchTopCounterparties),
+  };
+  localStorage.setItem(activityRulesKey, JSON.stringify(walletActivityRulesByWallet));
 }
 
 function recordWalletHistory(account, market, status) {
@@ -1102,25 +1904,540 @@ function summarizeWalletActivity(entries = []) {
   };
 }
 
+function summarizeActivityTrend(entries = []) {
+  const windowMs = 7 * 24 * 60 * 60_000;
+  const now = Date.now();
+  const recentStart = now - windowMs;
+  const priorStart = now - (2 * windowMs);
+  const bucket = (start, end) => entries.filter((tx) => tx.settledAt >= start && tx.settledAt < end);
+  const recent = bucket(recentStart, now);
+  const previous = bucket(priorStart, recentStart);
+  const recentOutflow = recent.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const previousOutflow = previous.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const recentTx = recent.filter((tx) => tx.from === wallet.address).length;
+  const previousTx = previous.filter((tx) => tx.from === wallet.address).length;
+  const recentInflow = recent.filter((tx) => tx.to === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const previousInflow = previous.filter((tx) => tx.to === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const outflowDelta = previousOutflow > 0 ? (recentOutflow - previousOutflow) / previousOutflow : recentOutflow > 0 ? 1 : 0;
+  const txDelta = previousTx > 0 ? (recentTx - previousTx) / previousTx : recentTx > 0 ? 1 : 0;
+  const movementDelta = recent.length ? (recentInflow + recentOutflow) - (previousInflow + previousOutflow) : 0;
+  const label = recentOutflow === 0 && recentInflow === 0 && previousOutflow === 0 && previousInflow === 0
+    ? "IDLE"
+    : outflowDelta > 0.25 || txDelta > 0.25 || movementDelta > SCALE * 5
+      ? "ACCELERATING"
+      : outflowDelta < -0.2 && txDelta < -0.2
+        ? "COOLING"
+        : "STABLE";
+  const tone = label === "ACCELERATING" ? "warning" : label === "COOLING" ? "good" : "";
+  const note = label === "IDLE"
+    ? "No settled activity yet in the last two weekly windows."
+    : label === "ACCELERATING"
+      ? `Outgoing value is up ${(Math.max(0, outflowDelta) * 100).toFixed(0)}% versus the prior week, and transaction count is rising too.`
+      : label === "COOLING"
+        ? `Outgoing value is down ${Math.abs(outflowDelta * 100).toFixed(0)}% versus the prior week, so the wallet is settling into a quieter rhythm.`
+        : `Activity is holding near the prior weekly pace.`;
+  return {
+    label,
+    tone,
+    note,
+    recentOutflow,
+    previousOutflow,
+    recentTx,
+    previousTx,
+    outflowDelta,
+    txDelta,
+  };
+}
+
+function summarizeActivityForecast(entries = []) {
+  const windowMs = 7 * 24 * 60 * 60_000;
+  const now = Date.now();
+  const recent = entries.filter((tx) => tx.settledAt >= now - windowMs);
+  const previous = entries.filter((tx) => tx.settledAt >= now - (2 * windowMs) && tx.settledAt < now - windowMs);
+  const recentOutflow = recent.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const previousOutflow = previous.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const recentFees = recent.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.fee || 0), 0);
+  const previousFees = previous.filter((tx) => tx.from === wallet.address).reduce((sum, tx) => sum + Number(tx.fee || 0), 0);
+  const recentTx = recent.filter((tx) => tx.from === wallet.address).length;
+  const previousTx = previous.filter((tx) => tx.from === wallet.address).length;
+  const recentDailyOutflow = recentOutflow / 7;
+  const previousDailyOutflow = previousOutflow / 7;
+  const acceleration = previousDailyOutflow > 0 ? recentDailyOutflow / previousDailyOutflow : recentDailyOutflow > 0 ? 1.25 : 1;
+  const projectedDailyOutflow = recentDailyOutflow * Math.min(1.6, Math.max(0.7, acceleration));
+  const projectedWeeklyOutflow = projectedDailyOutflow * 7;
+  const projectedWeeklyFees = recentTx > 0 ? (recentFees / recentTx) * Math.max(1, Math.round((recentTx + previousTx) / 2)) : previousFees;
+  const projectedBalance = Math.max(0, Number(currentAccount.availableBalance || 0) - projectedWeeklyOutflow - projectedWeeklyFees);
+  const pressure = currentAccount.availableBalance > 0 ? (projectedWeeklyOutflow + projectedWeeklyFees) / currentAccount.availableBalance : 1;
+  const tone = pressure >= 0.75 ? "warning" : pressure >= 0.4 ? "good" : "";
+  const riskLabel = pressure >= 0.75 ? "HIGH PRESSURE" : pressure >= 0.4 ? "ACTIVE BUT MANAGEABLE" : "LOW PRESSURE";
+  const weeklyChange = previousOutflow > 0 ? ((recentOutflow - previousOutflow) / previousOutflow) * 100 : recentOutflow > 0 ? 100 : 0;
+  return {
+    tone,
+    riskLabel,
+    projectedWeeklyOutflow,
+    projectedWeeklyFees,
+    projectedBalance,
+    pressure,
+    weeklyChange,
+    recentTx,
+    previousTx,
+    acceleration,
+  };
+}
+
+function analyzeActivitySignals(entries = []) {
+  const rules = walletActivityRules;
+  const byCounterparty = new Map();
+  const counterparties = new Set();
+  for (const tx of entries) {
+    const participants = [tx.from, tx.to].filter((address) => address && address !== wallet.address);
+    for (const address of participants) {
+      counterparties.add(address);
+      byCounterparty.set(address, (byCounterparty.get(address) ?? 0) + 1);
+    }
+  }
+  const topCounterparties = [...byCounterparty.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([address, count]) => ({ address, count, contactName: contacts.find((entry) => entry.address === address)?.name ?? null }));
+  const findings = [];
+  const largeTransfers = entries.filter((tx) => tx.from === wallet.address && Number(tx.amount || 0) >= rules.largeTransferEc * SCALE);
+  for (const tx of largeTransfers.slice(0, 5)) {
+    findings.push({
+      tone: "warning",
+      title: "Large outbound transfer",
+      text: `${format(tx.amount)} EC moved to ${contacts.find((entry) => entry.address === tx.to)?.name ?? short(tx.to, 10)}.`,
+      action: { label: "WATCH SENDER", type: "watch-address", value: tx.to },
+    });
+  }
+  const burstWindowMs = rules.burstWindowHours * 60 * 60_000;
+  const burstEntries = [...entries].sort((a, b) => b.settledAt - a.settledAt);
+  for (let i = 0; i < burstEntries.length; i++) {
+    const anchor = burstEntries[i];
+    const windowStart = anchor.settledAt - burstWindowMs;
+    const windowEntries = burstEntries.filter((tx) => tx.settledAt >= windowStart && tx.settledAt <= anchor.settledAt && tx.from === wallet.address);
+    if (windowEntries.length >= rules.burstCount) {
+      findings.push({
+        tone: "warning",
+        title: "Burst spending pattern",
+        text: `${windowEntries.length} outgoing transfers settled within ${rules.burstWindowHours}h.`,
+        action: { label: "SEE WATCHLIST", type: "scroll-watchlist" },
+      });
+      break;
+    }
+  }
+  if (rules.watchNewCounterparties) {
+    const watched = new Set(watchlist);
+    const knownContacts = new Set(contacts.map((entry) => entry.address));
+    const firstTimers = topCounterparties.filter((entry) => !watched.has(entry.address) && !knownContacts.has(entry.address)).slice(0, 3);
+    for (const entry of firstTimers) {
+      findings.push({
+        tone: "good",
+        title: "New counterparty worth tracking",
+        text: `${short(entry.address, 10)} appeared in ${entry.count} committed event${entry.count === 1 ? "" : "s"}.`,
+        action: { label: "ADD TO WATCHLIST", type: "watch-address", value: entry.address },
+      });
+    }
+  }
+  if (rules.watchTopCounterparties && topCounterparties.length) {
+    const seeded = topCounterparties.filter((entry) => !watchlist.includes(entry.address)).slice(0, 5);
+    if (seeded.length) {
+      findings.push({
+        tone: "neutral",
+        title: "Top counterparties available to seed",
+        text: `${seeded.length} of your busiest counterparts are not yet on the watchlist.`,
+        action: { label: "SEED TOP COUNTERPARTIES", type: "seed-counterparties" },
+      });
+    }
+  }
+  if (!findings.length) {
+    findings.push({
+      tone: "neutral",
+      title: "No rule hits yet",
+      text: "Current activity stays within the local intelligence thresholds.",
+      action: { label: "SEED FROM COUNTERPARTIES", type: "seed-counterparties" },
+    });
+  }
+  return { findings, topCounterparties, counterparties: counterparties.size };
+}
+
+function analyzeCounterpartyIntelligence(entries = []) {
+  const grouped = new Map();
+  const seen = new Set();
+  for (const tx of entries) {
+    for (const address of [tx.from, tx.to].filter((value) => value && value !== wallet.address)) {
+      seen.add(address);
+      if (!grouped.has(address)) {
+        grouped.set(address, {
+          address,
+          txCount: 0,
+          sent: 0,
+          received: 0,
+          firstSeen: tx.settledAt,
+          lastSeen: tx.settledAt,
+          largeMoves: 0,
+        });
+      }
+      const item = grouped.get(address);
+      item.txCount++;
+      item.firstSeen = Math.min(item.firstSeen, tx.settledAt);
+      item.lastSeen = Math.max(item.lastSeen, tx.settledAt);
+      if (tx.from === address) item.sent += Number(tx.amount || 0);
+      if (tx.to === address) item.received += Number(tx.amount || 0);
+      if (Number(tx.amount || 0) >= walletActivityRules.largeTransferEc * SCALE) item.largeMoves++;
+    }
+  }
+  const spanMs = Math.max(1, (walletActivitySummary.lastSeen ?? Date.now()) - (walletActivitySummary.firstSeen ?? Date.now()));
+  const totalVolume = Math.max(1, walletActivitySummary.inflow + walletActivitySummary.outflow);
+  const items = [...grouped.values()].map((item) => {
+    const balance = item.received - item.sent;
+    const isContact = contacts.some((entry) => entry.address === item.address);
+    const isWatched = watchlist.includes(item.address);
+    const ageDays = Math.max(1, (item.lastSeen - item.firstSeen) / 86_400_000);
+    const cadence = item.txCount / ageDays;
+    const share = ((item.sent + item.received) / totalVolume) * 100;
+    let risk = 0;
+    if (!isContact) risk += 15;
+    if (!isWatched) risk += 8;
+    if (item.largeMoves) risk += Math.min(25, item.largeMoves * 8);
+    if (item.txCount >= 4 && cadence > 2) risk += 15;
+    if (balance < 0 && item.sent > item.received * 1.5) risk += 10;
+    if (item.txCount === 1) risk += 8;
+    if (share > 20) risk += 10;
+    if (Date.now() - item.lastSeen < 24 * 60 * 60_000 && item.txCount > 2) risk += 7;
+    risk = Math.max(0, Math.min(100, Math.round(risk)));
+    const posture = risk >= 55 ? "risky" : risk >= 28 ? "watch" : "trusted";
+    return {
+      ...item,
+      balance,
+      share,
+      cadence,
+      risk,
+      posture,
+      isContact,
+      isWatched,
+      contactName: contacts.find((entry) => entry.address === item.address)?.name ?? null,
+    };
+  }).sort((a, b) => b.risk - a.risk || b.txCount - a.txCount || b.lastSeen - a.lastSeen);
+  return { items, seen: seen.size, spanMs };
+}
+
+function upsertContact(address, name) {
+  const normalizedAddress = String(address || "").trim();
+  if (!/^ec1[0-9a-f]{38}$/.test(normalizedAddress)) throw new Error("Enter a valid address");
+  const normalizedName = String(name || "").trim() || short(normalizedAddress, 10);
+  contacts = contacts.filter((contact) => contact.address !== normalizedAddress);
+  contacts.push({ name: normalizedName, address: normalizedAddress });
+  contacts.sort((a, b) => a.name.localeCompare(b.name));
+  localStorage.setItem(contactsKey, JSON.stringify(contacts));
+  renderContacts();
+  return normalizedName;
+}
+
+function renderCounterpartyIntelligence(entries = walletActivity) {
+  const summary = $("#counterparty-summary");
+  const list = $("#counterparty-list");
+  const top = $("#counterparty-top");
+  if (!summary || !list || !top) return;
+  const intelligence = analyzeCounterpartyIntelligence(entries);
+  walletCounterpartyInsights = intelligence.items;
+  const risky = intelligence.items.filter((item) => item.posture === "risky").length;
+  const watched = intelligence.items.filter((item) => item.isWatched).length;
+  const trusted = intelligence.items.filter((item) => item.posture === "trusted").length;
+  summary.textContent = intelligence.items.length
+    ? `${intelligence.items.length} counterparties analyzed · ${watched} watched · ${trusted} trusted · ${risky} flagged`
+    : "No counterparties yet for this activity window.";
+  top.innerHTML = intelligence.items.slice(0, 3).length
+    ? intelligence.items.slice(0, 3).map((item) => `
+      <span>
+        <b>${escapeHtml(item.contactName ?? short(item.address, 10))}</b>
+        <small>${escapeHtml(item.posture.toUpperCase())} · ${escapeHtml(String(item.txCount))} TX</small>
+      </span>`).join("")
+    : '<span><b>No counterparty data</b><small>Add activity to populate this panel</small></span>';
+  list.innerHTML = intelligence.items.length ? intelligence.items.slice(0, 8).map((item) => {
+    const primaryTone = item.posture === "risky" ? "warning" : item.posture === "trusted" ? "good" : "neutral";
+    const name = item.contactName ?? short(item.address, 10);
+    const netLabel = item.balance > 0 ? `+${format(item.balance)} EC` : item.balance < 0 ? `-${format(Math.abs(item.balance))} EC` : "0.000000 EC";
+    return `<article class="counterparty-row ${primaryTone}">
+      <div>
+        <b>${escapeHtml(name)}</b>
+        <p>${escapeHtml(item.address)} · ${escapeHtml(netLabel)} net · ${escapeHtml(format(item.share))}% of volume</p>
+        <div class="counterparty-tags">
+          <span>${escapeHtml(item.posture.toUpperCase())}</span>
+          <span>${escapeHtml(item.isContact ? "CONTACT" : "NEW")}</span>
+          <span>${escapeHtml(item.isWatched ? "WATCHED" : "UNWATCHED")}</span>
+          <span>${escapeHtml(String(item.txCount))} TX</span>
+        </div>
+      </div>
+      <div class="counterparty-score">
+        <strong>${escapeHtml(String(item.risk))}</strong>
+        <small>RISK</small>
+      </div>
+      <div class="counterparty-actions">
+        <button type="button" data-counterparty-action="watch" data-counterparty-address="${escapeHtml(item.address)}">WATCH</button>
+        <button type="button" data-counterparty-action="contact" data-counterparty-address="${escapeHtml(item.address)}" data-counterparty-name="${escapeHtml(item.contactName ?? name)}">SAVE CONTACT</button>
+        <button type="button" data-counterparty-action="copy" data-counterparty-address="${escapeHtml(item.address)}">COPY</button>
+      </div>
+    </article>`;
+  }).join("") : '<p class="empty">No counterparties in this activity set.</p>';
+  renderWatchlistOutlook(intelligence.items);
+}
+
+function renderWatchlistOutlook(counterparties = walletCounterpartyInsights) {
+  const note = $("#watchlist-outlook-note");
+  const riskBand = $("#watchlist-risk-band");
+  const riskNote = $("#watchlist-risk-note");
+  const movementBand = $("#watchlist-movement-band");
+  const movementNote = $("#watchlist-movement-note");
+  const nextStep = $("#watchlist-next-step");
+  const nextStepNote = $("#watchlist-next-step-note");
+  const panel = $(".watchlist-outlook");
+  if (!note || !riskBand || !riskNote || !movementBand || !movementNote || !nextStep || !nextStepNote || !panel) return;
+  if (!watchlist.length) {
+    note.textContent = "Add or seed watched addresses to unlock the outlook.";
+    riskBand.textContent = "EMPTY";
+    riskNote.textContent = "No addresses are currently under watch.";
+    movementBand.textContent = "NONE";
+    movementNote.textContent = "No snapshot comparison is available yet.";
+    nextStep.textContent = "SEED WATCHLIST";
+    nextStepNote.textContent = "Use counterparties or manually add an address.";
+    panel.classList.remove("warning");
+    return;
+  }
+  const watchedInsights = counterparties.filter((item) => watchlist.includes(item.address));
+  const watchedSnapshots = watchlist.map((address) => {
+    const cached = watchlistCache.find((entry) => entry.address === address);
+    const balance = address === wallet.address ? (currentAccount?.availableBalance ?? null) : cached?.account?.availableBalance ?? null;
+    const priorBalance = watchlistSnapshot[address]?.balance ?? null;
+    const delta = Number.isFinite(balance) && Number.isFinite(priorBalance) ? balance - priorBalance : null;
+    return { address, balance, delta, risk: watchedInsights.find((item) => item.address === address)?.risk ?? 0, posture: watchedInsights.find((item) => item.address === address)?.posture ?? "neutral" };
+  });
+  const risky = watchedSnapshots.filter((entry) => entry.risk >= 55);
+  const changing = watchedSnapshots.filter((entry) => entry.delta != null && entry.delta !== 0);
+  const zeroBalance = watchedSnapshots.filter((entry) => entry.balance != null && entry.balance <= 0);
+  const avgRisk = watchedSnapshots.length ? watchedSnapshots.reduce((sum, entry) => sum + entry.risk, 0) / watchedSnapshots.length : 0;
+  const riskLabel = avgRisk >= 65 ? "ELEVATED" : avgRisk >= 35 ? "WATCHFUL" : "CALM";
+  const movementLabel = changing.length ? `${changing.length} CHANGED` : "STABLE";
+  const noteText = watchedInsights.length
+    ? `${watchedInsights.length} watched address${watchedInsights.length === 1 ? "" : "es"} overlap with counterparty intelligence.`
+    : "No watched addresses have active counterparty history yet.";
+  note.textContent = noteText;
+  riskBand.textContent = riskLabel;
+  riskNote.textContent = risky.length
+    ? `${risky.length} watched address${risky.length === 1 ? "" : "es"} are high risk or actively monitored.`
+    : `Average watchlist risk is ${avgRisk.toFixed(0)} / 100.`;
+  movementBand.textContent = movementLabel;
+  movementNote.textContent = changing.length
+    ? `${changing.slice(0, 3).map((entry) => `${entry.delta > 0 ? "+" : "−"}${format(Math.abs(entry.delta))} EC`).join(" · ")} since the last snapshot.`
+    : "No watched balances changed since the last snapshot.";
+  nextStep.textContent = risky.length ? "REVIEW HIGH-RISK" : zeroBalance.length ? "TOP UP OR PRUNE" : "SEED TOP PEERS";
+  nextStepNote.textContent = risky.length
+    ? `Inspect ${short(risky[0].address, 10)} first; it has the highest risk in the current watch set.`
+    : zeroBalance.length
+      ? "Some watched accounts are empty, so consider whether they still need to remain on the watchlist."
+      : "The watchlist is calm; add your busiest counterparties to improve coverage.";
+  panel.classList.toggle("warning", risky.length > 0 || zeroBalance.length > 0);
+}
+
+function renderRelationshipMap(insights = walletCounterpartyInsights) {
+  const svg = $("#relationship-map");
+  const summary = $("#relationship-summary");
+  if (!svg || !summary) return;
+  const nodes = insights.slice(0, 6);
+  const width = 760;
+  const height = 360;
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = 122;
+  if (!nodes.length) {
+    summary.textContent = "No relationship graph yet. Activity will populate the network automatically.";
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.innerHTML = `<defs><linearGradient id="graphGlow" x1="0" x2="1"><stop offset="0%" stop-color="#c7f36b" stop-opacity=".85"></stop><stop offset="100%" stop-color="#70c7b8" stop-opacity=".55"></stop></linearGradient></defs><rect width="${width}" height="${height}" fill="#0b0f0d"></rect><circle cx="${cx}" cy="${cy}" r="44" fill="#101512" stroke="#c7f36b" stroke-width="2"></circle><text x="${cx}" y="${cy - 4}" text-anchor="middle" fill="#c7f36b" font-size="13" font-family="DM Mono">E-COIN</text><text x="${cx}" y="${cy + 16}" text-anchor="middle" fill="#657067" font-size="8" font-family="DM Mono">NO EDGES YET</text>`;
+    return;
+  }
+  const strongest = nodes[0];
+  const graphNodes = nodes.map((node, index) => {
+    const angle = (-Math.PI / 2) + ((Math.PI * 2) / Math.max(1, nodes.length)) * index;
+    const x = Math.round(cx + Math.cos(angle) * radius);
+    const y = Math.round(cy + Math.sin(angle) * radius);
+    return { ...node, x, y, angle };
+  });
+  summary.textContent = `${graphNodes.length} visible relationships · strongest link ${strongest.contactName ?? short(strongest.address, 10)} · ${String(strongest.txCount)} TX`;
+  const maxCount = Math.max(...graphNodes.map((node) => node.txCount), 1);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="graphGlow" x1="0" x2="1">
+        <stop offset="0%" stop-color="#c7f36b" stop-opacity=".95"></stop>
+        <stop offset="100%" stop-color="#70c7b8" stop-opacity=".6"></stop>
+      </linearGradient>
+    </defs>
+    <rect width="${width}" height="${height}" rx="18" fill="#0b0f0d"></rect>
+    <circle cx="${cx}" cy="${cy}" r="48" fill="#111712" stroke="url(#graphGlow)" stroke-width="3"></circle>
+    <text x="${cx}" y="${cy - 6}" text-anchor="middle" fill="#c7f36b" font-size="14" font-family="DM Mono">WALLET</text>
+    <text x="${cx}" y="${cy + 15}" text-anchor="middle" fill="#657067" font-size="8" font-family="DM Mono">${escapeHtml(wallet.name)}</text>
+    ${graphNodes.map((node) => {
+      const stroke = node.posture === "risky" ? "#ffa46b" : node.posture === "trusted" ? "#c7f36b" : "#70c7b8";
+      const strokeWidth = 1.4 + (node.txCount / maxCount) * 3;
+      const linkOpacity = 0.35 + (node.txCount / maxCount) * 0.45;
+      return `
+        <line x1="${cx}" y1="${cy}" x2="${node.x}" y2="${node.y}" stroke="${stroke}" stroke-opacity="${linkOpacity.toFixed(2)}" stroke-width="${strokeWidth.toFixed(2)}"></line>
+        <g transform="translate(${node.x} ${node.y})">
+          <circle r="${13 + Math.min(10, node.txCount * 1.5)}" fill="#0d1210" stroke="${stroke}" stroke-width="${node.isWatched ? 3 : 2}"></circle>
+          <text y="-18" text-anchor="middle" fill="#f2f5ee" font-size="9" font-family="DM Mono">${escapeHtml(node.contactName ?? short(node.address, 8))}</text>
+          <text y="2" text-anchor="middle" fill="#657067" font-size="8" font-family="DM Mono">${escapeHtml(String(node.txCount))} TX</text>
+          <text y="17" text-anchor="middle" fill="${stroke}" font-size="8" font-family="DM Mono">${escapeHtml(node.posture.toUpperCase())}</text>
+        </g>`;
+    }).join("")}
+  `;
+}
+
+function renderActivityHeatmap(entries = walletActivity) {
+  const svg = $("#activity-heatmap");
+  const summary = $("#heatmap-summary");
+  const peak = $("#heatmap-peak");
+  if (!svg || !summary || !peak) return;
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const width = 760;
+  const height = 260;
+  const left = 52;
+  const top = 34;
+  const cellW = (width - left - 20) / 24;
+  const cellH = (height - top - 26) / 7;
+  const heat = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const tx of entries) {
+    const stamp = new Date(tx.settledAt);
+    if (Number.isNaN(stamp.getTime())) continue;
+    heat[stamp.getDay()][stamp.getHours()]++;
+  }
+  const flat = heat.flat();
+  const total = flat.reduce((sum, value) => sum + value, 0);
+  const max = Math.max(...flat, 1);
+  const peakIndex = flat.indexOf(max);
+  const peakDay = days[Math.floor(peakIndex / 24)] ?? "—";
+  const peakHour = peakIndex % 24;
+  summary.textContent = total ? `${total} settled events analyzed across ${days.length} days and 24 hourly buckets.` : "No settled events yet, so the timing heatmap is empty.";
+  peak.textContent = total ? `Busiest bucket: ${peakDay} at ${String(peakHour).padStart(2, "0")}:00 with ${max} event${max === 1 ? "" : "s"}.` : "Add activity to reveal active hours and spikes.";
+  const gradient = (value) => {
+    const intensity = value / max;
+    const light = 10 + intensity * 28;
+    const alpha = 0.15 + intensity * 0.78;
+    return `hsla(79, 85%, ${light}%, ${alpha.toFixed(3)})`;
+  };
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.innerHTML = `
+    <rect x="0" y="0" width="${width}" height="${height}" fill="#0b0f0d"></rect>
+    <g font-family="DM Mono" fill="#657067" font-size="8">
+      ${days.map((day, index) => `<text x="10" y="${top + index * cellH + 12}">${day}</text>`).join("")}
+      ${Array.from({ length: 24 }, (_, hour) => `<text x="${left + hour * cellW + 2}" y="18">${String(hour).padStart(2, "0")}</text>`).join("")}
+    </g>
+    ${heat.map((row, dayIndex) => row.map((value, hourIndex) => {
+      const x = left + hourIndex * cellW;
+      const y = top + dayIndex * cellH;
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${(cellW - 2).toFixed(2)}" height="${(cellH - 2).toFixed(2)}" fill="${gradient(value)}" stroke="#1f2a24" stroke-width="1"></rect>`;
+    }).join("")).join("")}
+  `;
+}
+
+function renderActivityIntelligence(entries = walletActivity) {
+  const summary = $("#activity-intel-summary");
+  const list = $("#activity-intel-list");
+  const top = $("#activity-intel-top");
+  const seed = $("#activity-intel-seed");
+  const largeTransfer = $("#activity-rule-large-transfer");
+  const burstCount = $("#activity-rule-burst-count");
+  const burstWindow = $("#activity-rule-burst-window");
+  const watchNew = $("#activity-rule-watch-new");
+  const watchTop = $("#activity-rule-watch-top");
+  if (!summary || !list || !top || !seed || !largeTransfer || !burstCount || !burstWindow || !watchNew || !watchTop) return;
+  largeTransfer.value = String(walletActivityRules.largeTransferEc);
+  burstCount.value = String(walletActivityRules.burstCount);
+  burstWindow.value = String(walletActivityRules.burstWindowHours);
+  watchNew.checked = walletActivityRules.watchNewCounterparties;
+  watchTop.checked = walletActivityRules.watchTopCounterparties;
+  const intelligence = analyzeActivitySignals(entries);
+  walletActivitySignals = intelligence.findings;
+  $(".activity-signal-card")?.classList.toggle("has-warning", intelligence.findings.some((item) => item.tone === "warning"));
+  renderCounterpartyIntelligence(entries);
+  renderRelationshipMap(walletCounterpartyInsights);
+  renderActivityHeatmap(entries);
+  const watchable = intelligence.topCounterparties.slice(0, 6);
+  const warningCount = intelligence.findings.filter((item) => item.tone === "warning").length;
+  const strongest = intelligence.topCounterparties[0];
+  const strongestLabel = strongest ? `${strongest.contactName ?? short(strongest.address, 10)} (${strongest.count} hits)` : "No active counterparties";
+  summary.textContent = `${intelligence.counterparties} counterparties tracked · ${warningCount} warning${warningCount === 1 ? "" : "s"} · busiest relationship ${strongestLabel}.`;
+  top.innerHTML = watchable.length ? watchable.map((entry) => `<span><b>${escapeHtml(entry.contactName ?? short(entry.address, 10))}</b><small>${escapeHtml(String(entry.count))} hits</small></span>`).join("") : '<span><b>None yet</b><small>No counterparties discovered</small></span>';
+  list.innerHTML = intelligence.findings.length ? intelligence.findings.map((item) => `
+    <article class="activity-finding ${item.tone}">
+      <div>
+        <b>${escapeHtml(item.title)}</b>
+        <p>${escapeHtml(item.text)}</p>
+      </div>
+      <button type="button" data-activity-action="${escapeHtml(item.action.type)}" data-activity-action-value="${escapeHtml(item.action.value ?? "")}">${escapeHtml(item.action.label)}</button>
+    </article>`).join("") : '<div class="activity-clear-state"><span>✓</span><div><b>No active signals</b><p>Current activity is inside the saved policy thresholds.</p></div></div>';
+  seed.textContent = intelligence.topCounterparties.length ? `Seed ${Math.min(5, intelligence.topCounterparties.length)} top counterparties` : "Seed from counterparties";
+}
+
 function renderWalletActivity(activity = walletActivity, account = currentAccount) {
   const summaryNode = $("#activity-summary");
   const list = $("#activity-list");
   const note = $("#activity-note");
   if (!summaryNode || !list || !note) return;
-  const summary = walletActivitySummary = summarizeWalletActivity(activity);
+  const filtered = activity.filter((tx) => {
+    if (walletActivityFilter === "all") return true;
+    if (walletActivityFilter === "incoming") return tx.to === wallet.address;
+    if (walletActivityFilter === "outgoing") return tx.from === wallet.address;
+    if (walletActivityFilter === "contract") return String(tx.type || "").startsWith("contract_");
+    return true;
+  }).filter((tx) => {
+    if (walletActivityFrom && tx.settledAt < new Date(walletActivityFrom).getTime()) return false;
+    if (walletActivityTo && tx.settledAt > new Date(`${walletActivityTo}T23:59:59.999`).getTime()) return false;
+    if (!walletActivityQuery) return true;
+    const needle = walletActivityQuery.toLowerCase();
+    const fields = [
+      tx.id,
+      tx.type,
+      tx.from,
+      tx.to,
+      tx.memo,
+      tx.contractAddress,
+      tx.blockHeight,
+      tx.amount,
+      tx.fee,
+      contacts.find((entry) => entry.address === tx.from)?.name,
+      contacts.find((entry) => entry.address === tx.to)?.name,
+    ].filter((value) => value != null).map((value) => String(value).toLowerCase());
+    return fields.some((value) => value.includes(needle));
+  });
+  const summary = walletActivitySummary = summarizeWalletActivity(filtered);
+  const trend = summarizeActivityTrend(filtered);
+  const forecast = summarizeActivityForecast(filtered);
+  renderActivityIntelligence(filtered);
   $("#activity-inflow").textContent = `${format(summary.inflow)} EC`;
   $("#activity-outflow").textContent = `${format(summary.outflow)} EC`;
   $("#activity-fees").textContent = `${format(summary.fees)} EC`;
   $("#activity-net").textContent = `${summary.net >= 0 ? "+" : ""}${format(Math.abs(summary.net))} EC`;
   $("#activity-count").textContent = `${summary.txCount} TX`;
   $("#activity-counterparties").textContent = `${summary.counterparties} peers`;
-  $("#activity-window").textContent = summary.firstSeen && summary.lastSeen ? `${relativeTime(summary.firstSeen)} → ${relativeTime(summary.lastSeen)}` : "No history yet";
-  const newest = activity[0];
-  const oldest = activity.at(-1);
+  const windowNode = $("#activity-window");
+  if (windowNode) windowNode.textContent = summary.firstSeen && summary.lastSeen ? `${relativeTime(summary.firstSeen)} → ${relativeTime(summary.lastSeen)}` : "No history yet";
+  const newest = filtered[0];
   const stateLabel = newest ? `${activityKindLabel(newest)} · ${relativeTime(newest.settledAt)}` : "No confirmed activity yet";
   summaryNode.textContent = `${summary.txCount} confirmed event${summary.txCount === 1 ? "" : "s"} · ${summary.counterparties} ${summary.counterparties === 1 ? "counterparty" : "counterparties"} · ${summary.net >= 0 ? "net positive" : "net negative"}`;
   note.textContent = summary.anomalies.length ? summary.anomalies[0].text : newest ? `Latest activity: ${stateLabel}` : "No on-chain activity has settled for this wallet yet.";
-  list.innerHTML = activity.length ? activity.map((tx) => {
+  const trendNode = $("#activity-trend");
+  if (trendNode) {
+    trendNode.className = `activity-summary-trend ${trend.tone}`.trim();
+    trendNode.textContent = `Trend: ${trend.label} · ${trend.note}`;
+  }
+  const forecastTone = $("#activity-forecast");
+  if (forecastTone) forecastTone.className = `activity-forecast ${forecast.tone}`.trim();
+  $("#activity-forecast-outflow").textContent = `${format(forecast.projectedWeeklyOutflow)} EC`;
+  $("#activity-forecast-outflow-note").textContent = `${forecast.weeklyChange >= 0 ? "+" : ""}${forecast.weeklyChange.toFixed(0)}% vs prior week · ${forecast.recentTx} recent send${forecast.recentTx === 1 ? "" : "s"}`;
+  $("#activity-forecast-balance").textContent = `${format(forecast.projectedBalance)} EC`;
+  $("#activity-forecast-balance-note").textContent = forecast.projectedBalance <= 0 ? "Projected balance would be exhausted under current pacing." : `At current pacing, about ${format(forecast.projectedWeeklyFees)} EC in fees is also expected.`;
+  $("#activity-forecast-pressure").textContent = `${Math.round(forecast.pressure * 100)}%`;
+  $("#activity-forecast-pressure-note").textContent = forecast.riskLabel;
+  list.innerHTML = filtered.length ? filtered.map((tx) => {
     const direction = activityDirection(tx);
     const tone = direction === "in" ? "good" : direction === "out" ? "warning" : "neutral";
     const counterparty = direction === "in" ? tx.from : tx.to;
@@ -1139,7 +2456,7 @@ function renderWalletActivity(activity = walletActivity, account = currentAccoun
       </div>
       <strong>${escapeHtml(value)}${escapeHtml(fee)}</strong>
     </article>`;
-  }).join("") : '<p class="empty">No confirmed activity yet.</p>';
+  }).join("") : '<p class="empty">No confirmed activity matches this filter.</p>';
   if (summary.anomalies.length) {
     summaryNode.classList.add("warning");
     note.title = summary.anomalies.map((item) => item.text).join(" ");
@@ -1151,7 +2468,21 @@ function renderWalletActivity(activity = walletActivity, account = currentAccoun
 }
 
 function exportWalletActivity(formatType = "csv") {
-  const entries = walletActivity;
+  const entries = walletActivity.filter((tx) => {
+    if (walletActivityFilter !== "all") {
+      if (walletActivityFilter === "incoming" && tx.to !== wallet.address) return false;
+      if (walletActivityFilter === "outgoing" && tx.from !== wallet.address) return false;
+      if (walletActivityFilter === "contract" && !String(tx.type || "").startsWith("contract_")) return false;
+    }
+    if (walletActivityFrom && tx.settledAt < new Date(walletActivityFrom).getTime()) return false;
+    if (walletActivityTo && tx.settledAt > new Date(`${walletActivityTo}T23:59:59.999`).getTime()) return false;
+    if (!walletActivityQuery) return true;
+    const needle = walletActivityQuery.toLowerCase();
+    return [tx.id, tx.type, tx.from, tx.to, tx.memo, tx.contractAddress, tx.blockHeight, tx.amount, tx.fee]
+      .filter((value) => value != null)
+      .map((value) => String(value).toLowerCase())
+      .some((value) => value.includes(needle));
+  });
   if (!entries.length) throw new Error("No activity is available to export yet");
   const rows = entries.map((tx) => ({
     settledAt: new Date(tx.settledAt).toISOString(),
@@ -1222,6 +2553,7 @@ function renderPaymentPlans() {
   if (!paymentPlans.length) {
     summary.textContent = "Create a reminder for future transfers or repeatable payments.";
     list.innerHTML = '<p class="empty">No payment plans yet.</p>';
+    if (marketData) renderStressLab();
     return;
   }
   const now = Date.now();
@@ -1240,6 +2572,7 @@ function renderPaymentPlans() {
     }
   }
   savePaymentPlans();
+  if (marketData) renderStressLab();
 }
 
 function renderWalletDiagnostics() {
@@ -1398,6 +2731,191 @@ function renderSessionSecurity() {
         : sessionSecurity.lockWhenHidden ? "Inactivity locking is off, but the vault still locks whenever the app is hidden." : "Automatic locking is disabled; use Lock Now after signing.";
   }
   $(".session-security").classList.toggle("warn", vaultState === "none" || backupStale);
+  renderSecurityCenter();
+}
+
+function buildSecurityPosture() {
+  const now = Date.now();
+  const backupAt = Number(recoveryAudit[wallet?.address] || 0);
+  const backupAge = backupAt ? now - backupAt : null;
+  const backupRecent = backupAge != null && backupAge <= 7 * 24 * 60 * 60_000;
+  const recentWarnings = securityJournal.filter((entry) => entry.severity === "warning").length;
+  const recentCritical = securityJournal.filter((entry) => entry.severity === "critical").length;
+  const guardReserve = Number(guardPolicy.reserve || 0);
+  const events = securityJournal.slice(0, 6);
+  const recommendations = [];
+  const attackVectors = [];
+  let score = 100;
+
+  if (vaultState === "none") {
+    score -= 40;
+    recommendations.push({ tone:"warning", title:"Enable the vault", text:"Encrypt the local keys before moving more value." });
+    attackVectors.push("Private keys are stored in browser storage.");
+  } else if (vaultState === "locked") {
+    score -= 12;
+    recommendations.push({ tone:"good", title:"Keys are sealed", text:"Unlock only when you are ready to sign something intentionally." });
+  } else {
+    recommendations.push({ tone:"good", title:"Signing is available", text:"Keep the active session short and lock the vault when you pause." });
+  }
+
+  if (!sessionSecurity.timeoutMinutes) {
+    score -= 14;
+    recommendations.push({ tone:"warning", title:"Auto-lock is off", text:"Turn on inactivity locking so the signing session cannot sit open forever." });
+    attackVectors.push("Session can remain open indefinitely.");
+  } else if (sessionSecurity.timeoutMinutes <= 5) {
+    score += 4;
+    recommendations.push({ tone:"good", title:"Short session timer", text:"The current inactivity timer is aggressive enough for a shared machine." });
+  } else if (sessionSecurity.timeoutMinutes <= 15) {
+    score += 2;
+  } else {
+    score -= 4;
+  }
+
+  if (!sessionSecurity.lockWhenHidden) {
+    score -= 8;
+    recommendations.push({ tone:"warning", title:"Hidden app stays unlocked", text:"Lock on hide closes an easy attack path if you step away." });
+    attackVectors.push("Hidden-tab exposure remains enabled.");
+  }
+
+  if (backupAt === 0) {
+    score -= 18;
+    recommendations.push({ tone:"warning", title:"No fresh recovery bundle", text:"Create an encrypted recovery backup after unlocking the vault." });
+    attackVectors.push("No encrypted recovery copy is recorded.");
+  } else if (!backupRecent) {
+    score -= 10;
+    recommendations.push({ tone:"warning", title:"Recovery bundle is stale", text:`Last encrypted backup was ${relativeTime(backupAt)}.` });
+    attackVectors.push("Recovery backup may not match the latest wallet state.");
+  } else {
+    score += 4;
+    recommendations.push({ tone:"good", title:"Recovery is recent", text:"The latest encrypted backup is still reasonably fresh." });
+  }
+
+  if (!guardReserve) {
+    score -= 5;
+    recommendations.push({ tone:"warning", title:"No reserve floor", text:"Set a minimum reserve so one large send cannot empty the wallet." });
+    attackVectors.push("No reserve floor protects against oversized sends.");
+  } else if ((currentAccount.availableBalance ?? 0) < guardReserve) {
+    score -= 6;
+    recommendations.push({ tone:"warning", title:"Reserve is tight", text:`The configured reserve of ${format(guardReserve)} EC is above the current available balance.` });
+    attackVectors.push("Configured reserve exceeds liquid balance.");
+  }
+
+  if (guardPolicy.knownOnly) score += 4;
+  if (guardPolicy.dailyLimit) score += 2;
+  const activeWarnings = walletActivitySignals.filter((signal) => signal.tone === "warning");
+  if (activeWarnings.length) {
+    score -= 6;
+    attackVectors.push(`${activeWarnings.length} active activity warning${activeWarnings.length === 1 ? "" : "s"} detected.`);
+  }
+  score -= Math.min(16, recentWarnings * 4 + recentCritical * 8);
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  const grade = score >= 90 ? "HARDENED" : score >= 75 ? "READY" : score >= 55 ? "CAUTION" : "EXPOSED";
+  const sessionLabel = vaultState === "locked"
+    ? "LOCKED"
+    : vaultState === "unlocked"
+      ? (sessionSecurity.timeoutMinutes ? `${sessionSecurity.timeoutMinutes} MIN TIMER` : "AUTO-LOCK OFF")
+      : "NOT ENABLED";
+  const backupLabel = backupAt ? (backupAge < 60_000 ? "JUST NOW" : relativeTime(backupAt).toUpperCase()) : "NO BACKUP";
+  const eventSummary = `${securityJournal.length} event${securityJournal.length === 1 ? "" : "s"} recorded`;
+  const attackSurface = attackVectors.length;
+  const attackSurfaceLabel = attackSurface === 0 ? "MINIMAL" : attackSurface <= 2 ? "LOW" : attackSurface <= 4 ? "MODERATE" : "EXPANDED";
+  const nearTermRisk = score >= 90 ? "LOW" : score >= 75 ? "LOW-MEDIUM" : score >= 55 ? "MEDIUM" : "HIGH";
+  const nextAction = recommendations[0] || { title: "Review posture", text: "Check the security center for the next step." };
+
+  if (!recommendations.length) {
+    recommendations.push({ tone:"good", title:"Good baseline", text:"Nothing obvious is out of policy right now." });
+  }
+
+  return { score, grade, backupLabel, eventSummary, sessionLabel, recommendations:recommendations.slice(0, 4), events, attackSurface, attackSurfaceLabel, nearTermRisk, nextAction, attackVectors:attackVectors.slice(0, 4) };
+}
+
+function renderSecurityCenter() {
+  if (!$("#security-center")) return;
+  const posture = buildSecurityPosture();
+  $("#security-score").textContent = `${posture.score}/100`;
+  $("#security-grade").textContent = posture.grade;
+  $("#security-session-state").textContent = posture.sessionLabel;
+  $("#security-backup-state").textContent = posture.backupLabel;
+  $("#security-event-state").textContent = posture.eventSummary;
+  $("#security-session-note").textContent = vaultState === "locked"
+    ? "Signing keys are sealed right now."
+    : vaultState === "unlocked"
+      ? "A live session is available for signing."
+      : "Vault is not enabled yet.";
+  $("#security-backup-note").textContent = posture.backupLabel === "NO BACKUP"
+    ? "No encrypted recovery bundle has been created."
+    : posture.backupLabel === "JUST NOW"
+      ? "You just created a fresh encrypted backup."
+      : `Last backup recorded ${posture.backupLabel.toLowerCase()}.`;
+  $("#security-event-note").textContent = posture.events.length
+    ? `${posture.events[0].title} is the latest event.`
+    : "No security events have been recorded for this wallet.";
+  $("#security-attack-surface").textContent = posture.attackSurfaceLabel;
+  $("#security-attack-note").textContent = posture.attackVectors.length
+    ? posture.attackVectors.join(" ")
+    : "No obvious local attack vectors were detected.";
+  $("#security-near-term-risk").textContent = posture.nearTermRisk;
+  $("#security-near-term-note").textContent = posture.grade === "HARDENED"
+    ? "The next signing session should be low risk if the vault stays locked when idle."
+    : posture.grade === "READY"
+      ? "The wallet is usable, but keep an eye on session and backup discipline."
+      : posture.grade === "CAUTION"
+        ? "One or two soft spots remain; tighten them before moving larger balances."
+        : "The wallet is exposed enough that a hardening pass should happen first.";
+  $("#security-next-action").textContent = posture.nextAction.title;
+  $("#security-next-action-note").textContent = posture.nextAction.text;
+  $("#security-summary").textContent = posture.grade === "HARDENED"
+    ? "The wallet is configured for short sessions, recent recovery, and clear local guardrails."
+    : posture.grade === "READY"
+      ? "The wallet is in good shape, but the latest recommendations still deserve a quick review."
+      : posture.grade === "CAUTION"
+        ? "A few protective settings are soft or stale. Tighten them before moving larger balances."
+        : "This wallet needs attention before it should be treated as safe for larger transfers.";
+  $("#security-recommendations").innerHTML = posture.recommendations.map((item, index) => `
+    <article class="security-recommendation ${item.tone}">
+      <span>${index + 1}</span>
+      <div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.text)}</p></div>
+    </article>`).join("");
+  $("#security-timeline").innerHTML = posture.events.length ? posture.events.map((event) => `
+    <article class="security-event ${escapeHtml(event.severity || "info")}">
+      <time>${escapeHtml(relativeTime(Number(event.timestamp)))}</time>
+      <div><b>${escapeHtml(event.title)}</b><p>${escapeHtml(event.detail)}</p></div>
+      <i>${escapeHtml(String(event.type).replaceAll("_", " ").toUpperCase())}</i>
+    </article>`).join("") : '<p class="empty">No wallet security events yet. We will build this timeline as you use the wallet.</p>';
+  $(".security-center").classList.toggle("warn", posture.grade === "CAUTION" || posture.grade === "EXPOSED");
+  $(".security-outlook")?.classList.toggle("warning", posture.grade === "CAUTION" || posture.grade === "EXPOSED");
+  renderLearnLab();
+}
+
+function buildSecurityReport() {
+  const posture = buildSecurityPosture();
+  return {
+    exportedAt: Date.now(),
+    wallet: { name: wallet?.name, address: wallet?.address, vaultState, wallets: wallets.length },
+    posture,
+    sessionSecurity,
+    guardPolicy,
+    recoveryAuditAt: Number(recoveryAudit[wallet?.address] || 0) || null,
+    securityJournal,
+    walletHistory,
+    recentTransfers,
+    spendJournal,
+  };
+}
+
+function recordSecurityEvent(type, title, detail, severity = "info") {
+  if (!wallet?.address) return;
+  securityJournal = [{
+    id: crypto.randomUUID(),
+    type,
+    title,
+    detail,
+    severity,
+    timestamp: Date.now(),
+  }, ...securityJournal].slice(0, 24);
+  saveSecurityJournal();
+  renderSecurityCenter();
 }
 
 function checkSessionSecurity() {
@@ -1698,6 +3216,7 @@ function renderWatchlist(account) {
     return `<article class="watch-item"><div><span>${address === wallet.address ? "YOU" : "WATCHED"}</span><b title="${escapeHtml(address)}">${escapeHtml(short(address, 10))}</b><p>${escapeHtml(balance == null ? "Loading balance..." : `${format(balance)} EC available`)} · ${escapeHtml(history)} · ${contractCount} contracts · ${escapeHtml(deltaText)}</p></div><div><span>STATUS</span><p>${escapeHtml(label)}</p></div><button type="button" data-watch-remove="${escapeHtml(address)}">REMOVE</button></article>`;
   }).join("");
   list.innerHTML = rows;
+  renderWatchlistOutlook(walletCounterpartyInsights);
 }
 
 function collectAlerts(account, walletContracts = []) {
@@ -1777,6 +3296,13 @@ function summarizeNextEvent(contracts) {
     .map((contract) => {
       if (contract.contractType === "hashlock" && contract.status === "locked") return { label: "Hashlock deadline", at: contract.refundTime };
       if (contract.contractType === "vesting" && contract.status === "vesting") return { label: `Vesting ${contract.releasedInstallments + 1}/${contract.installments}`, at: contract.nextReleaseAt ?? contract.unlockTime };
+      if (contract.contractType === "milestone" && contract.status === "locked") {
+        const milestone = (contract.approvalRound ?? (contract.releasedInstallments ?? 0) + 1);
+        const creatorApproved = (contract.creatorApprovedRound ?? 0) >= milestone;
+        const beneficiaryApproved = (contract.beneficiaryApprovedRound ?? 0) >= milestone;
+        const approvalLabel = creatorApproved && beneficiaryApproved ? "Ready for release" : creatorApproved || beneficiaryApproved ? "One approval missing" : "Awaiting both approvals";
+        return { label: `Milestone ${milestone}/${contract.installments} · ${approvalLabel}`, at: contract.nextReleaseAt ?? contract.unlockTime };
+      }
       if (contract.contractType === "timelock" && contract.status === "locked") return { label: "Timelock release", at: contract.unlockTime };
       return null;
     })
@@ -1826,6 +3352,7 @@ function computeSystemHealth(status, market, blocks) {
 function renderDataIntelligence(market, status, blocks, priceValues) {
   const healthScore = computeSystemHealth(status, market, blocks);
   const momentum = summarizeMomentum(priceValues);
+  const regime = analyzeMarketRegime(market, status, priceValues);
   const eta = formatDuration(Math.max(0, nextBlockAt - Date.now()));
   const pressure = feeQuote.pressure;
   let recommendation = "The network is stable, the treasury is healthy, and the market is calm.";
@@ -1840,10 +3367,231 @@ function renderDataIntelligence(market, status, blocks, priceValues) {
   $("#data-health-note").textContent = healthScore >= 85 ? "Excellent" : healthScore >= 65 ? "Good" : healthScore >= 40 ? "Watch closely" : "Degraded";
   $("#data-price-momentum").textContent = momentum.label;
   $("#data-price-note").textContent = momentum.note;
+  $("#data-mode").textContent = `${regime.label} · ${regime.confidence}`;
   $("#data-block-eta").textContent = eta === "—" ? "—" : `~ ${eta}`;
   $("#data-block-note").textContent = eta === "—" ? "Awaiting the next seal." : `Estimated next seal in ${eta}.`;
-  $("#data-recommendation").textContent = recommendation;
+  $("#data-recommendation").textContent = `${regime.note} ${recommendation}`;
+  renderDataActions(market, status, momentum, regime, pressure, healthScore);
   renderMarketAlerts(market);
+}
+
+function renderDataActions(market, status, momentum, regime, pressure, healthScore) {
+  const list = $("#data-actions");
+  if (!list) return;
+  const actions = [];
+  const branchEntries = portfolioEntries.length ? portfolioEntries : [];
+  const childBranches = branchEntries.filter((entry) => entry.wallet.parentAddress);
+  const rootBranches = branchEntries.filter((entry) => !entry.wallet.parentAddress);
+  const totalHoldings = branchEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.holdings || 0)), 0);
+  const treasuryShare = totalHoldings ? Number(market.treasuryBalance || 0) / totalHoldings : 0;
+  const availableShare = totalHoldings ? branchEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.availableBalance || 0)), 0) / totalHoldings : 0;
+  const concentration = totalHoldings && branchEntries.length ? Math.max(...branchEntries.map((entry) => Math.max(0, Number(entry.holdings || 0)))) / totalHoldings : 0;
+  const latestTrend = summarizeActivityTrend(walletActivity);
+  const latestForecast = summarizeActivityForecast(walletActivity);
+  const urgentBranch = [...childBranches].sort((a, b) => {
+    const aDeficit = Math.max(0, estimateSubwalletReserve(a) - Number(a.availableBalance || 0));
+    const bDeficit = Math.max(0, estimateSubwalletReserve(b) - Number(b.availableBalance || 0));
+    return bDeficit - aDeficit || a.wallet.name.localeCompare(b.wallet.name);
+  })[0];
+
+  if (pressure > 0.75) {
+    actions.push({
+      tone: "warning",
+      title: "Tight network conditions",
+      text: "Use the wallet fee tools before signing urgent transfers so the queue does not punish the draft.",
+      detail: `${Math.round(pressure * 100)}% mempool pressure is elevated right now.`,
+      label: "OPEN WALLET",
+      action: () => document.querySelector('[data-view="wallet"]')?.click(),
+    });
+  }
+
+  if (momentum.delta > 2 || regime.label === "BULLISH") {
+    actions.push({
+      tone: "good",
+      title: "Positive market momentum",
+      text: "Stagger any new buys or use limits instead of crossing the spread aggressively.",
+      detail: `${momentum.label} price movement with ${regime.confidence.toLowerCase()} confidence.`,
+      label: "OPEN ORDER BOOK",
+      action: () => {
+        document.querySelector('[data-view="data"]')?.click();
+        $("#orderbook-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      },
+    });
+  } else if ((market.spreadMicroUsd ?? 0) / 1_000_000 > 0.02) {
+    actions.push({
+      tone: "warning",
+      title: "Wide spread detected",
+      text: "The book is thin enough that a limit order is the safer default.",
+      detail: `Current spread is ${usd((market.spreadMicroUsd || 0) / 1_000_000, 6)}.`,
+      label: "REVIEW BOOK",
+      action: () => $("#orderbook-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
+  if (latestForecast.pressure >= 0.4) {
+    actions.push({
+      tone: latestForecast.tone || "good",
+      title: "Forward liquidity pressure",
+      text: "Your recent activity suggests a week-ahead balance check before the next large send.",
+      detail: `Projected balance ${format(latestForecast.projectedBalance)} EC under current pacing.`,
+      label: "REVIEW ACTIVITY",
+      action: () => $("#activity-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
+  if (concentration > 0.6 || latestTrend.label === "ACCELERATING") {
+    actions.push({
+      tone: concentration > 0.6 ? "warning" : latestTrend.tone || "good",
+      title: "Branch concentration or acceleration",
+      text: "The hierarchy would benefit from a quick allocation review or branch top-up check.",
+      detail: concentration > 0.6
+        ? `${(concentration * 100).toFixed(1)}% of holdings sit in one wallet.`
+        : latestTrend.note,
+      label: "REVIEW SUBWALLETS",
+      action: () => $("#subwallet-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
+  if (healthScore < 65) {
+    actions.push({
+      tone: "warning",
+      title: "System health needs attention",
+      text: "The ledger, treasury, or activity mix could use a sanity check before the next bigger move.",
+      detail: `Health score is ${healthScore}/100 and available share is ${(availableShare * 100).toFixed(1)}%.`,
+      label: "OPEN PORTFOLIO",
+      action: () => $("#portfolio-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
+  if (!actions.length) {
+    actions.push({
+      tone: "good",
+      title: "No urgent actions",
+      text: "The system looks balanced, so the best move is usually to stay disciplined and keep monitoring.",
+      detail: `Treasury share ${(treasuryShare * 100).toFixed(1)}% · ${rootBranches.length} roots · ${childBranches.length} subwallets.`,
+      label: "OPEN MARKET",
+      action: () => $("#orderbook-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+
+  list.innerHTML = actions.slice(0, 4).map((item, index) => `
+    <article class="data-action ${item.tone}">
+      <div>
+        <b>${escapeHtml(item.title)}</b>
+        <p>${escapeHtml(item.text)}</p>
+        <small>${escapeHtml(item.detail)}</small>
+      </div>
+      <button type="button" data-data-action="${index}">${escapeHtml(item.label)}</button>
+    </article>
+  `).join("");
+  list.dataset.actions = JSON.stringify(actions.map((item) => item.label));
+  list._actions = actions;
+}
+
+function forecastPlanCommitments(now, endAt) {
+  const events = [];
+  for (const plan of paymentPlans) {
+    if (plan.paused) continue;
+    let dueAt = Math.max(now, Number(plan.nextRunAt) || now);
+    let occurrence = 0;
+    while (dueAt <= endAt && occurrence < 366) {
+      events.push({ dueAt, amount:Number(plan.amount) || 0, name:plan.name || "Payment plan" });
+      occurrence++;
+      if (plan.cadence === "once") break;
+      dueAt += cadenceToMs(plan.cadence);
+    }
+  }
+  return events.sort((a, b) => a.dueAt - b.dueAt);
+}
+
+function historicalDailyOutflow(now = Date.now()) {
+  const cutoff = now - 30 * 24 * 60 * 60_000;
+  const outgoing = walletActivity.filter((tx) => tx.from === wallet.address && tx.settledAt >= cutoff && tx.type === "transfer");
+  if (!outgoing.length) return { daily:0, count:0, total:0 };
+  const total = outgoing.reduce((sum, tx) => sum + Number(tx.amount || 0) + Number(tx.fee || 0), 0);
+  const oldest = Math.min(...outgoing.map((tx) => tx.settledAt));
+  const observedDays = Math.max(7, Math.min(30, (now - oldest) / (24 * 60 * 60_000)));
+  return { daily:total / observedDays, count:outgoing.length, total };
+}
+
+function buildStressProjection() {
+  const now = Date.now();
+  const horizonMs = stressScenario.horizonDays * 24 * 60 * 60_000;
+  const endAt = now + horizonMs;
+  const available = Number(currentAccount.availableBalance || 0);
+  const planEvents = forecastPlanCommitments(now, endAt);
+  const planAmount = planEvents.reduce((sum, event) => sum + event.amount, 0);
+  const planFees = planEvents.length * Math.max(1_000, Number(feeQuote.standard) || activeFee);
+  const history = historicalDailyOutflow(now);
+  const behaviorSpend = stressScenario.includeHistory ? history.daily * stressScenario.horizonDays : 0;
+  const extraSpend = stressScenario.extraSpendEc * SCALE;
+  const contractEvents = contractTimelineRows(currentContracts).filter((row) => row.direction === "incoming" && row.dueAt >= now && row.dueAt <= endAt && row.contract.contractType !== "hashlock");
+  const contractInflow = contractEvents.reduce((sum, row) => sum + row.amount, 0);
+  const conditionalInflow = contractTimelineRows(currentContracts).filter((row) => row.direction === "incoming" && row.dueAt >= now && row.dueAt <= endAt && row.contract.contractType === "hashlock").reduce((sum, row) => sum + row.amount, 0);
+  const commitments = planAmount + planFees + behaviorSpend + extraSpend;
+  const projected = available + contractInflow - commitments;
+  const coverage = commitments > 0 ? (available + contractInflow) / commitments : Infinity;
+  const dailyBurn = (planAmount + planFees + behaviorSpend + extraSpend) / Math.max(1, stressScenario.horizonDays);
+  const runwayDays = dailyBurn > 0 ? (available + contractInflow) / dailyBurn : Infinity;
+  const stressedPrice = Math.max(0, Number(marketData?.priceUsd || 0) * (1 + stressScenario.priceShockPct / 100));
+  let score = 100;
+  if (projected < 0) score -= Math.min(70, 45 + Math.abs(projected) / Math.max(available, SCALE) * 25);
+  else if (coverage < 1.25) score -= 35;
+  else if (coverage < 2) score -= 18;
+  if (stressScenario.priceShockPct <= -50) score -= 10;
+  if (conditionalInflow > available * .25) score -= 8;
+  if (planEvents.length > 12) score -= 5;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const recommendedReserve = Math.max(5 * SCALE, history.daily * 7, planEvents.filter((event) => event.dueAt <= now + 30 * 24 * 60 * 60_000).reduce((sum, event) => sum + event.amount, 0) + Math.min(planFees, 30 * Math.max(1_000, Number(feeQuote.standard) || activeFee)));
+  const steps = Array.from({ length:13 }, (_, index) => {
+    const ratio = index / 12;
+    const at = now + horizonMs * ratio;
+    const plansDue = planEvents.filter((event) => event.dueAt <= at).reduce((sum, event) => sum + event.amount + Math.max(1_000, Number(feeQuote.standard) || activeFee), 0);
+    const inflowDue = contractEvents.filter((event) => event.dueAt <= at).reduce((sum, event) => sum + event.amount, 0);
+    return available + inflowDue - plansDue - behaviorSpend * ratio - extraSpend * ratio;
+  });
+  return { available, planEvents, planAmount, planFees, history, behaviorSpend, extraSpend, contractEvents, contractInflow, conditionalInflow, commitments, projected, coverage, runwayDays, stressedPrice, score, recommendedReserve, steps };
+}
+
+function renderStressLab() {
+  if (!$("#stress-chart") || !wallet || !marketData) return;
+  $("#stress-horizon").value = String(stressScenario.horizonDays);
+  $("#stress-price-shock").value = String(stressScenario.priceShockPct);
+  $("#stress-extra-spend").value = String(stressScenario.extraSpendEc);
+  $("#stress-use-history").checked = stressScenario.includeHistory;
+  const result = buildStressProjection();
+  stressRecommendedReserve = result.recommendedReserve;
+  const grade = result.score >= 85 ? "RESILIENT" : result.score >= 65 ? "STABLE" : result.score >= 40 ? "EXPOSED" : "AT RISK";
+  const usd = (value) => value.toLocaleString(undefined, { style:"currency", currency:"USD", maximumFractionDigits:2 });
+  $("#stress-projected").textContent = `${result.projected < 0 ? "−" : ""}${format(Math.abs(result.projected))} EC`;
+  $("#stress-projected-usd").textContent = `${usd(Math.max(0, result.projected / SCALE) * result.stressedPrice)} at stressed price`;
+  $("#stress-commitments").textContent = `${format(result.commitments)} EC`;
+  $("#stress-commitment-count").textContent = `${result.planEvents.length} planned payment${result.planEvents.length === 1 ? "" : "s"} · ${result.contractEvents.length} expected inflow${result.contractEvents.length === 1 ? "" : "s"}`;
+  $("#stress-coverage").textContent = Number.isFinite(result.coverage) ? `${result.coverage.toFixed(2)}×` : "NO OUTFLOW";
+  $("#stress-runway").textContent = Number.isFinite(result.runwayDays) ? `${Math.floor(result.runwayDays)} day runway` : "No modeled burn";
+  $("#stress-score").textContent = `${result.score}/100`;
+  $("#stress-grade").textContent = `${grade} · ${stressScenario.priceShockPct >= 0 ? "+" : ""}${stressScenario.priceShockPct}% price case`;
+  const min = Math.min(0, ...result.steps);
+  const max = Math.max(SCALE, ...result.steps);
+  const range = max - min || SCALE;
+  const coords = result.steps.map((value, index) => [28 + index * 704 / 12, 190 - (value - min) / range * 150]);
+  const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const path = coords.map(([x, y], index) => `${index ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  const zeroY = 190 - (0 - min) / range * 150;
+  $("#stress-chart polyline").setAttribute("points", line);
+  $("#stress-chart .area").setAttribute("d", `${path} L 732 190 L 28 190 Z`);
+  $("#stress-chart .chart-gridlines").innerHTML = `<line x1="28" y1="40" x2="732" y2="40"></line><line x1="28" y1="115" x2="732" y2="115"></line><line class="zero" x1="28" y1="${zeroY.toFixed(1)}" x2="732" y2="${zeroY.toFixed(1)}"></line>`;
+  $("#stress-chart .stress-markers").innerHTML = `<text x="28" y="210">TODAY</text><text x="732" y="210" text-anchor="end">${stressScenario.horizonDays} DAYS</text><text x="36" y="34">${escapeHtml(format(max))} EC</text>`;
+  const findings = [];
+  findings.push({ tone:result.projected < 0 ? "warning" : "good", title:result.projected < 0 ? "Liquidity deficit" : "Liquidity survives", text:result.projected < 0 ? `The scenario is short by ${format(Math.abs(result.projected))} EC.` : `${format(result.projected)} EC remains liquid after modeled obligations.` });
+  if (result.planEvents.length) findings.push({ tone:result.planAmount > result.available * .5 ? "warning" : "neutral", title:"Scheduled commitments", text:`${result.planEvents.length} payment occurrence${result.planEvents.length === 1 ? "" : "s"} require ${format(result.planAmount + result.planFees)} EC including forecast fees.` });
+  if (stressScenario.includeHistory) findings.push({ tone:result.history.daily * 30 > result.available ? "warning" : "neutral", title:"Behavioral baseline", text:`Recent transfer behavior implies about ${format(result.history.daily)} EC of daily outflow from ${result.history.count} settled send${result.history.count === 1 ? "" : "s"}.` });
+  if (result.contractInflow) findings.push({ tone:"good", title:"Deterministic inflows", text:`${format(result.contractInflow)} EC is expected from timelock or vesting releases inside the horizon.` });
+  if (result.conditionalInflow) findings.push({ tone:"warning", title:"Conditional value excluded", text:`${format(result.conditionalInflow)} EC in hashlock value is not counted because a secret claim or refund can change the outcome.` });
+  $("#stress-findings").innerHTML = findings.map((item) => `<article class="stress-finding ${item.tone}"><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.text)}</p></article>`).join("");
+  $("#stress-guidance").textContent = result.score >= 85 ? `This wallet can absorb the selected scenario. A ${format(result.recommendedReserve)} EC guard reserve would protect near-term obligations.` : result.score >= 55 ? `The wallet remains usable, but coverage is thin. Preserve at least ${format(result.recommendedReserve)} EC and review upcoming plans.` : `The scenario produces material liquidity risk. Reduce commitments, add funding, or shorten the forecast before signing new transfers.`;
+  $("#stress-apply-reserve").disabled = !Number.isFinite(result.recommendedReserve) || result.recommendedReserve <= 0;
+  $(".stress-lab-panel").classList.toggle("warning", result.score < 55);
 }
 
 async function runDataSearch(query) {
@@ -1960,10 +3708,12 @@ $("#session-timeout").addEventListener("change", (event) => {
   sessionSecurity.timeoutMinutes = Number(event.target.value);
   lastSensitiveActivity = Date.now();
   saveSessionSecurity(); renderSessionSecurity(); toast("Auto-lock policy updated");
+  recordSecurityEvent("session_policy", "Session timer updated", `Auto-lock is now set to ${sessionSecurity.timeoutMinutes ? `${sessionSecurity.timeoutMinutes} minutes` : "off"}.`, sessionSecurity.timeoutMinutes ? "good" : "warning");
 });
 $("#lock-when-hidden").addEventListener("change", (event) => {
   sessionSecurity.lockWhenHidden = event.target.checked;
   saveSessionSecurity(); renderSessionSecurity(); toast(event.target.checked ? "Hidden-app locking enabled" : "Hidden-app locking disabled");
+  recordSecurityEvent("session_policy", "Hidden lock preference changed", event.target.checked ? "The vault will lock when the app is hidden." : "The vault will stay unlocked when the app is hidden.", event.target.checked ? "good" : "warning");
 });
 $("#lock-session-now").addEventListener("click", () => {
   if (vaultState !== "unlocked") return;
@@ -1978,26 +3728,120 @@ document.addEventListener("visibilitychange", () => {
 async function activateWallet(address) {
   wallet=wallets.find((candidate)=>candidate.address===address)??wallet;
   await saveWallets();
-  loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard();
+  loadSecurityJournal();
+  loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); loadActivityRules(); loadStressScenario();
   showWallet();
   $("#send-form").reset();
   $("#batch-input").value=""; batchDraft=[];
   renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings();
   portfolioUpdatedAt = 0;
+  recordSecurityEvent("wallet_switched", "Wallet opened", `Switched to ${wallet.name}.`, "info");
   await refresh();
 }
 
 $("#wallet-picker").addEventListener("change",async(event)=>{
   await activateWallet(event.target.value); toast(`Switched to ${wallet.name}`);
 });
-$("#open-wallet-manager").addEventListener("click",()=>{$("#wallet-name").value="";renderWallets();$("#wallet-overlay").hidden=false;$("#wallet-name").focus();});
+$("#wallet-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-wallet-send]");
+  if (!button) return;
+  try {
+    await loadWalletRecipient(button.dataset.walletSend);
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#wallet-tree").addEventListener("click", async (event) => {
+  const openButton = event.target.closest("[data-wallet-open]");
+  const sendButton = event.target.closest("[data-wallet-send]");
+  const transferButton = event.target.closest("[data-wallet-transfer]");
+  try {
+    if (openButton) {
+      await activateWallet(openButton.dataset.walletOpen);
+      renderWallets();
+      toast(`Opened ${wallet.name}`);
+      return;
+    }
+    if (sendButton) {
+      await loadWalletRecipient(sendButton.dataset.walletSend);
+      return;
+    }
+    if (transferButton) {
+      await loadWalletTransfer(transferButton.dataset.walletTransfer, Number(transferButton.dataset.walletTransferAmount || 0));
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#subwallet-allocator-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-subwallet-topup-parent]");
+  if (!button) return;
+  try {
+    await prepareSubwalletTopUp(button.dataset.subwalletTopupParent, button.dataset.subwalletTopupChild, Number(button.dataset.subwalletTopupAmount || 0));
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#subwallet-trend-list").addEventListener("click", async (event) => {
+  const topUpButton = event.target.closest("[data-subwallet-topup-parent]");
+  const openButton = event.target.closest("[data-wallet-open]");
+  try {
+    if (topUpButton) {
+      await prepareSubwalletTopUp(topUpButton.dataset.subwalletTopupParent, topUpButton.dataset.subwalletTopupChild, Number(topUpButton.dataset.subwalletTopupAmount || 0));
+      return;
+    }
+    if (openButton) {
+      await activateWallet(openButton.dataset.walletOpen);
+      renderWallets();
+      toast(`Opened ${wallet.name}`);
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#open-wallet-manager").addEventListener("click",()=>{
+  $("#wallet-name").value="";
+  $("#wallet-is-subwallet").checked = wallets.length > 0;
+  renderWallets();
+  $("#wallet-overlay").hidden=false;
+  $("#wallet-name").focus();
+});
 $("#close-wallet-manager").addEventListener("click",closeWalletManager);
 $("#wallet-form").addEventListener("submit",async(event)=>{
   event.preventDefault(); const button=event.currentTarget.querySelector("button"); const name=$("#wallet-name").value.trim();
   if (!name) return toast("Wallet name cannot be blank",true);
   if (vaultState === "locked") return toast("Unlock the vault before creating another wallet", true);
   setBusy(button,true);
-  try { wallet=await createWallet(name); wallets.push(wallet); portfolioUpdatedAt=0; await saveWallets(); renderWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); showWallet(); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); closeWalletManager(); await refresh(); toast(`${name} created locally`); }
+  try {
+    const parentAddress = $("#wallet-is-subwallet").checked ? wallet?.address ?? null : null;
+    const rootAddress = parentAddress ? (wallet?.rootAddress ?? wallet?.address) : null;
+    wallet=await createWallet(name, { kind: parentAddress ? "subwallet" : "wallet", parentAddress, rootAddress });
+    wallets.push(wallet);
+    portfolioUpdatedAt=0;
+    await saveWallets();
+    renderWallets();
+    loadSecurityJournal();
+    loadRecentTransfers();
+    loadTransferTemplates();
+    loadWalletHistory();
+    loadPaymentPlans();
+    loadPaymentRequests();
+    loadTransactionGuard();
+    loadActivityRules();
+    loadStressScenario();
+    showWallet();
+    renderRecentTransfers();
+    renderTransferTemplates();
+    renderWalletHistory();
+    renderWalletDiagnostics();
+    renderPaymentPlans();
+    renderPaymentRequests();
+    renderTransactionGuardSettings();
+    closeWalletManager();
+    recordSecurityEvent(parentAddress ? "subwallet_created" : "wallet_created", parentAddress ? "Subwallet created" : "Wallet created", `${name} was generated locally with a new Ed25519 keypair.${parentAddress ? ` It is a child of ${walletParentName(wallet) || "the active wallet"}.` : ""}`, "good");
+    await refresh();
+    toast(`${name} created locally${parentAddress ? " as a subwallet" : ""}`);
+  }
   catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
 $("#close-vault").addEventListener("click", closeVaultDialog);
@@ -2020,7 +3864,10 @@ $("#vault-form").addEventListener("submit", async (event) => {
       closeVaultDialog();
       await saveWallets();
       renderWallets();
+      loadActivityRules();
+      loadStressScenario();
       showWallet();
+      recordSecurityEvent("vault_enabled", "Vault enabled", "Local private keys are now encrypted in this browser.", "good");
       toast("Vault enabled and encrypted locally");
       return;
     }
@@ -2031,12 +3878,15 @@ $("#vault-form").addEventListener("submit", async (event) => {
     vaultPassword = password;
     vaultState = "unlocked";
     lastSensitiveActivity = Date.now();
-    await ensureTreasuryWallet();
-    await saveWallets();
-    renderWallets();
+      await ensureTreasuryWallet();
+      await saveWallets();
+      renderWallets();
+    loadActivityRules();
+    loadStressScenario();
     showWallet();
     closeVaultDialog();
     await refresh();
+    recordSecurityEvent("vault_unlocked", "Vault unlocked", "Signing access was restored in this browser session.", "good");
     toast("Vault unlocked");
   } catch (error) {
     toast(error.message, true);
@@ -2059,7 +3909,7 @@ $("#load-more").addEventListener("click", async (event) => {
 $("#faucet").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   setBusy(button, true);
-  try { await api("/faucet", { method:"POST", body:JSON.stringify({ address:wallet.address }) }); setBusy(button, false); await refresh(); toast("25 test EC received"); }
+  try { await api("/faucet", { method:"POST", body:JSON.stringify({ address:wallet.address }) }); setBusy(button, false); await refresh(); recordSecurityEvent("faucet_claimed", "Faucet received", "Test funds were credited from the treasury faucet.", "good"); toast("25 test EC received"); }
   catch (error) { setBusy(button, false); toast(error.message, true); }
 });
 $("#open-buy").addEventListener("click",async()=>{
@@ -2074,7 +3924,7 @@ $("#buy-form").addEventListener("submit",async(event)=>{
     if (wallet.address===currentStatus?.treasuryAddress) throw new Error("Select a non-treasury wallet");
     const usdCents=Math.round(Number($("#buy-usd").value)*100); if (!Number.isSafeInteger(usdCents)) throw new Error("Enter a valid USD amount");
     const purchaseId=crypto.randomUUID(); const result=await api("/market/buy",{method:"POST",body:JSON.stringify({address:wallet.address,usdCents,purchaseId})});
-    $("#buy-overlay").hidden=true; await refresh(); toast(`Treasury purchase settled: ${format(result.transaction.amount)} EC`);
+    $("#buy-overlay").hidden=true; await refresh(); recordSecurityEvent("market_purchase", "Treasury purchase settled", `${format(result.transaction.amount)} EC was bought from the genesis treasury for $${(usdCents/100).toFixed(2)}.`, "good"); toast(`Treasury purchase settled: ${format(result.transaction.amount)} EC`);
   } catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
 async function updateBuyQuote() {
@@ -2099,6 +3949,117 @@ $("#export-activity-json").addEventListener("click", () => {
     toast(error.message, true);
   }
 });
+$("#activity-rule-large-transfer")?.addEventListener("change", (event) => {
+  walletActivityRules.largeTransferEc = Math.max(0.1, Number(event.target.value) || 10);
+  saveActivityRules();
+  renderWalletActivity();
+});
+$("#activity-rule-burst-count")?.addEventListener("change", (event) => {
+  walletActivityRules.burstCount = Math.max(2, Math.round(Number(event.target.value) || 4));
+  saveActivityRules();
+  renderWalletActivity();
+});
+$("#activity-rule-burst-window")?.addEventListener("change", (event) => {
+  walletActivityRules.burstWindowHours = Math.min(168, Math.max(1, Number(event.target.value) || 24));
+  saveActivityRules();
+  renderWalletActivity();
+});
+$("#activity-rule-watch-new")?.addEventListener("change", (event) => {
+  walletActivityRules.watchNewCounterparties = event.target.checked;
+  saveActivityRules();
+  renderWalletActivity();
+});
+$("#activity-rule-watch-top")?.addEventListener("change", (event) => {
+  walletActivityRules.watchTopCounterparties = event.target.checked;
+  saveActivityRules();
+  renderWalletActivity();
+});
+$("#activity-filter")?.addEventListener("change", (event) => {
+  walletActivityFilter = event.target.value || "all";
+  renderWalletActivity();
+  toast(`Activity filter set to ${walletActivityFilter}`);
+});
+$("#activity-search")?.addEventListener("input", (event) => {
+  walletActivityQuery = event.target.value.trim();
+  renderWalletActivity();
+});
+$("#activity-from")?.addEventListener("change", (event) => {
+  walletActivityFrom = event.target.value;
+  renderWalletActivity();
+});
+$("#activity-to")?.addEventListener("change", (event) => {
+  walletActivityTo = event.target.value;
+  renderWalletActivity();
+});
+$("#activity-intel-seed")?.addEventListener("click", async () => {
+  try {
+    const added = seedWatchlistFromCounterparties(currentAccount);
+    renderWatchlist(currentAccount);
+    await refreshWatchlist(currentAccount);
+    toast(added ? `${added} counterparties added to watchlist` : "No new counterparties to seed");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+$("#activity-intel-list")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-activity-action]");
+  if (!button) return;
+  const action = button.dataset.activityAction;
+  const value = button.dataset.activityActionValue || "";
+  if (action === "watch-address" && value) {
+    try {
+      const added = addWatchAddress(value);
+      renderWatchlist(currentAccount);
+      await refreshWatchlist(currentAccount);
+      toast(added ? "Address added to watchlist" : "Address is already on the watchlist");
+    } catch (error) {
+      toast(error.message, true);
+    }
+    return;
+  }
+  if (action === "seed-counterparties") {
+    try {
+      const added = seedWatchlistFromCounterparties(currentAccount);
+      renderWatchlist(currentAccount);
+      await refreshWatchlist(currentAccount);
+      toast(added ? `${added} counterparties added to watchlist` : "No new counterparties to seed");
+    } catch (error) {
+      toast(error.message, true);
+    }
+    return;
+  }
+  if (action === "scroll-watchlist") {
+    document.querySelector('[data-view="data"]').click();
+    setTimeout(() => $("#watchlist-address")?.scrollIntoView({ behavior: "smooth", block: "center" }), 150);
+    toast("Jumped to watchlist");
+  }
+});
+$("#counterparty-list")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-counterparty-action]");
+  if (!button) return;
+  const address = button.dataset.counterpartyAddress || "";
+  try {
+    if (button.dataset.counterpartyAction === "watch") {
+      const added = addWatchAddress(address);
+      renderWatchlist(currentAccount);
+      await refreshWatchlist(currentAccount);
+      toast(added ? "Address added to watchlist" : "Address is already on the watchlist");
+      return;
+    }
+    if (button.dataset.counterpartyAction === "contact") {
+      const name = button.dataset.counterpartyName || short(address, 10);
+      upsertContact(address, name);
+      toast("Contact saved");
+      return;
+    }
+    if (button.dataset.counterpartyAction === "copy") {
+      await navigator.clipboard.writeText(address);
+      toast("Address copied");
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
 $("#refresh-portfolio").addEventListener("click", async (event) => {
   const button = event.currentTarget; setBusy(button, true);
   try { portfolioUpdatedAt = 0; await refreshPortfolio(marketData, currentStatus, true); toast("Portfolio refreshed"); }
@@ -2113,6 +4074,35 @@ $("#portfolio-list").addEventListener("click", async (event) => {
     document.querySelector('[data-view="wallet"]').click();
     toast(`Opened ${wallet.name}`);
   } catch (error) { toast(error.message, true); }
+});
+for (const id of ["rebalance-strategy", "rebalance-floor", "rebalance-buffer", "rebalance-minimum", "rebalance-treasury"]) {
+  $("#" + id)?.addEventListener(id === "rebalance-strategy" || id === "rebalance-treasury" ? "change" : "input", () => {
+    rebalanceConfig = {
+      strategy:$("#rebalance-strategy").value === "floor" ? "floor" : "equal",
+      floorEc:Math.max(0, Number($("#rebalance-floor").value) || 0),
+      bufferEc:Math.max(0, Number($("#rebalance-buffer").value) || 0),
+      minimumEc:Math.max(.000001, Number($("#rebalance-minimum").value) || .000001),
+      includeTreasury:$("#rebalance-treasury").checked,
+    };
+    saveRebalanceConfig();
+    renderRebalancePlanner();
+  });
+}
+$("#rebalance-list")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-rebalance-load]");
+  if (!button) return;
+  try { await loadRebalanceMove(rebalancePlan[Number(button.dataset.rebalanceLoad)]); }
+  catch (error) { toast(error.message, true); }
+});
+$("#rebalance-load-next")?.addEventListener("click", async () => {
+  try { await loadRebalanceMove(rebalancePlan[0]); }
+  catch (error) { toast(error.message, true); }
+});
+$("#rebalance-copy")?.addEventListener("click", async () => {
+  if (!rebalancePlan.length) return;
+  const lines = ["E-Coin portfolio rebalance plan", ...rebalancePlan.map((move, index) => `${index + 1}. ${move.fromName} (${move.from}) -> ${move.toName} (${move.to}): ${(move.amount / SCALE).toFixed(6)} EC + ${(move.fee / SCALE).toFixed(6)} EC fee`)];
+  await navigator.clipboard.writeText(lines.join("\n"));
+  toast("Rebalance plan copied");
 });
 $("#watchlist-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2276,6 +4266,15 @@ $("#market-alert-list").addEventListener("click", (event) => {
   renderMarketAlerts(marketData);
   toast("Market alert removed");
 });
+$("#data-actions").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-data-action]");
+  if (!button) return;
+  const actions = $("#data-actions")._actions || [];
+  const action = actions[Number(button.dataset.dataAction)];
+  if (!action) return;
+  action.action?.();
+  toast(action.title);
+});
 $("#your-orders").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-order-cancel]");
   if (!button) return;
@@ -2296,6 +4295,9 @@ $("#market-quote-fill").addEventListener("click", () => {
   $("#order-price").value = price.toFixed(6);
   toast("Mid price selected");
 });
+$("#order-side").addEventListener("change", () => renderOrderAssistant(marketData));
+$("#order-amount").addEventListener("input", () => renderOrderAssistant(marketData));
+$("#order-price").addEventListener("input", () => renderOrderAssistant(marketData));
 $("#order-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const side = $("#order-side").value;
@@ -2442,6 +4444,26 @@ $("#plan-list").addEventListener("click", (event) => {
     toast(`Removed ${plan.name}`);
   }
 });
+for (const id of ["stress-horizon", "stress-price-shock", "stress-extra-spend", "stress-use-history"]) {
+  $("#" + id)?.addEventListener(id === "stress-use-history" ? "change" : "input", () => {
+    stressScenario = {
+      horizonDays:Number($("#stress-horizon").value) || 30,
+      priceShockPct:Math.max(-95, Math.min(300, Number($("#stress-price-shock").value) || 0)),
+      extraSpendEc:Math.max(0, Number($("#stress-extra-spend").value) || 0),
+      includeHistory:$("#stress-use-history").checked,
+    };
+    saveStressScenario();
+    renderStressLab();
+  });
+}
+$("#stress-apply-reserve")?.addEventListener("click", () => {
+  if (!Number.isFinite(stressRecommendedReserve) || stressRecommendedReserve <= 0) return;
+  guardPolicy.reserve = Math.round(stressRecommendedReserve);
+  saveTransactionGuard();
+  renderTransactionGuardSettings();
+  renderTransactionGuard();
+  toast(`Transaction Guard reserve set to ${format(guardPolicy.reserve)} EC`);
+});
 $("#data-search").addEventListener("input", (event) => {
   clearTimeout(dataSearchTimer);
   dataSearchTimer = setTimeout(() => runDataSearch(event.target.value).catch((error) => toast(error.message, true)), 250);
@@ -2496,6 +4518,15 @@ $("#recipient").addEventListener("input", (event) => {
   updateComposer();
 });
 $("#fee-tier").addEventListener("change", () => { applyFeeTier(); updateComposer(); renderBatchComposer(); });
+$("#fee-apply-recommended")?.addEventListener("click", () => {
+  const tier = recommendedFeeTier(Number(feeQuote.pressure) || 0);
+  $("#fee-tier").value = tier;
+  applyFeeTier();
+  updateComposer();
+  renderBatchComposer();
+  renderFeeIntelligence();
+  toast(`${tier.toUpperCase()} fee tier applied to new transfers`);
+});
 $("#save-guard").addEventListener("click", () => {
   const dailyLimit = Math.round(Number($("#guard-daily-limit").value) * SCALE);
   const reserve = Math.round(Number($("#guard-reserve").value) * SCALE);
@@ -2504,6 +4535,7 @@ $("#save-guard").addEventListener("click", () => {
   saveTransactionGuard();
   renderTransactionGuardSettings();
   updateComposer();
+  recordSecurityEvent("guard_policy", "Transaction Guard saved", `Daily limit ${guardPolicy.dailyLimit ? format(guardPolicy.dailyLimit) : "off"} EC, reserve ${format(guardPolicy.reserve)} EC, known contacts only ${guardPolicy.knownOnly ? "on" : "off"}.`, "good");
   toast("Transaction Guard policy saved");
 });
 $("#batch-input").addEventListener("input", renderBatchComposer);
@@ -2527,6 +4559,7 @@ $("#submit-batch").addEventListener("click", async (event) => {
     }));
     const result = await api("/transactions/batch", { method:"POST", body:JSON.stringify({ transactions }) });
     recordRecentTransfers(transactions);
+    recordSecurityEvent("batch_signed", "Batch queued", `${result.queued} transfers were signed and queued together.`, "good");
     $("#batch-input").value = "";
     batchDraft = [];
     await refresh();
@@ -2583,19 +4616,41 @@ $("#contact-list").addEventListener("click", (event) => {
   contacts=contacts.filter((contact)=>contact.address!==button.dataset.address);
   localStorage.setItem(contactsKey,JSON.stringify(contacts)); renderContacts(); toast(`${removed?.name ?? "Contact"} removed`);
 });
+function downloadJsonFile(value, filename) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type:"application/json" });
+  const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:filename });
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function renderOfflineSigningStatus(stage, guidance, fingerprint = "") {
+  offlineSigningStage = stage;
+  const labels = { idle:"READY FOR A DRAFT", exported:"UNSIGNED DRAFT EXPORTED", signed:"SIGNED ENVELOPE EXPORTED", broadcast:"TRANSFER BROADCAST", error:"CHECK REQUIRED" };
+  $("#offline-signing-status").textContent = labels[stage] || labels.idle;
+  $("#offline-signing-guidance").textContent = guidance;
+  $("#offline-signing-fingerprint").textContent = fingerprint ? `INTENT ${fingerprint.slice(0, 20).toUpperCase()}` : "NO ENVELOPE LOADED";
+  $(".offline-signing-panel").classList.toggle("warning", stage === "error");
+}
+
+async function offlineIntentFingerprint(tx) {
+  return sha256Text(canonicalTransaction(tx));
+}
+
 function buildRecoveryBundle() {
   return {
-    version: 2,
+    version: 3,
     exportedAt: Date.now(),
     wallet,
     walletHistory,
     recentTransfers,
-  transferTemplates,
-  paymentPlans,
-  paymentRequests,
-  contacts,
-  transactionGuard: guardPolicy,
-  spendJournal,
+    transferTemplates,
+    paymentPlans,
+    paymentRequests,
+    contacts,
+    transactionGuard: guardPolicy,
+    spendJournal,
+    securityJournal,
+    stressScenario,
   };
 }
 function restoreRecoveryBundle(bundle) {
@@ -2629,8 +4684,21 @@ async function importRecoveryData(imported) {
       };
     }
     if (Array.isArray(imported.spendJournal)) spendJournal=imported.spendJournal.filter((entry)=>entry && Number.isSafeInteger(entry.amount) && Number.isFinite(entry.timestamp)).slice(0,200);
-    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); savePaymentRequests(); saveWalletHistory(); saveTransactionGuard(); saveSpendJournal();
-    portfolioUpdatedAt=0; renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderWalletHistory(); renderWalletDiagnostics(); renderTransactionGuardSettings(); showWallet(); await refresh(); toast("Wallet imported");
+    if (Array.isArray(imported.securityJournal)) {
+      securityJournal = imported.securityJournal
+        .filter((entry) => entry && typeof entry.type === "string" && typeof entry.title === "string" && Number.isFinite(Number(entry.timestamp)))
+        .slice(0, 24);
+    }
+    if (imported.stressScenario && typeof imported.stressScenario === "object") {
+      stressScenario = {
+        horizonDays:[7,30,90,180].includes(Number(imported.stressScenario.horizonDays)) ? Number(imported.stressScenario.horizonDays) : 30,
+        priceShockPct:Number.isFinite(Number(imported.stressScenario.priceShockPct)) ? Math.max(-95, Math.min(300, Number(imported.stressScenario.priceShockPct))) : -35,
+        extraSpendEc:Math.max(0, Number(imported.stressScenario.extraSpendEc) || 0),
+        includeHistory:imported.stressScenario.includeHistory !== false,
+      };
+    }
+    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); savePaymentRequests(); saveWalletHistory(); saveTransactionGuard(); saveSpendJournal(); saveStressScenario(); saveSecurityJournal();
+    portfolioUpdatedAt=0; renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderWalletHistory(); renderWalletDiagnostics(); renderTransactionGuardSettings(); loadActivityRules(); loadStressScenario(); renderSecurityCenter(); showWallet(); recordSecurityEvent("backup_imported", "Recovery imported", "An encrypted recovery bundle was opened and verified locally.", "good"); await refresh(); toast("Wallet imported");
 }
 
 function openRecoveryDialog(mode) {
@@ -2672,7 +4740,7 @@ $("#recovery-form").addEventListener("submit", async (event) => {
       const envelope = await encryptRecoveryBundle(buildRecoveryBundle(), password);
       const blob = new Blob([JSON.stringify(envelope, null, 2)], { type:"application/json" });
       const link = Object.assign(document.createElement("a"), { href:URL.createObjectURL(blob), download:`ecoin-recovery-${wallet.address.slice(0, 10)}.json` });
-      link.click(); URL.revokeObjectURL(link.href); recoveryAudit[wallet.address] = Date.now(); localStorage.setItem(recoveryAuditKey, JSON.stringify(recoveryAudit)); closeRecoveryDialog(); renderSessionSecurity(); toast("Encrypted recovery bundle created");
+      link.click(); URL.revokeObjectURL(link.href); recoveryAudit[wallet.address] = Date.now(); localStorage.setItem(recoveryAuditKey, JSON.stringify(recoveryAudit)); closeRecoveryDialog(); renderSessionSecurity(); recordSecurityEvent("backup_created", "Recovery bundle created", "An encrypted recovery file was exported for this wallet.", "good"); toast("Encrypted recovery bundle created");
       return;
     }
     if (!pendingRecoveryEnvelope) throw new Error("Encrypted recovery data is missing");
@@ -2693,6 +4761,73 @@ $("#import-key").addEventListener("change", async (event) => {
       await importRecoveryData(imported);
     }
   } catch (error) { toast(error.message, true); }
+  event.target.value = "";
+});
+$("#security-drill").addEventListener("click", () => {
+  if (vaultState !== "unlocked") return toast("Unlock the vault before running a recovery drill", true);
+  pendingRecoveryEnvelope = null;
+  openRecoveryDialog("export");
+  recordSecurityEvent("recovery_drill", "Recovery drill started", "Opened the encrypted backup workflow for this wallet.", "good");
+  toast("Recovery drill opened");
+});
+$("#security-export").addEventListener("click", () => {
+  downloadJsonFile(buildSecurityReport(), `ecoin-security-${wallet.address.slice(0, 10)}.json`);
+  recordSecurityEvent("security_report", "Security report exported", "A local security posture report was downloaded from this wallet.", "good");
+  toast("Security report exported");
+});
+$("#offline-export-draft").addEventListener("click", async () => {
+  try {
+    const amount = Math.round(Number($("#amount").value) * SCALE);
+    const recipient = $("#recipient").value.trim();
+    const tx = { from:wallet.address, to:recipient, amount, fee:activeFee, nonce:currentAccount.nextNonce, memo:$("#memo").value.trim(), timestamp:Date.now(), publicKey:wallet.publicKey };
+    const guard = evaluateTransactionGuard(tx);
+    if (guard.blocked) throw new Error("Transaction Guard blocked this offline draft");
+    const envelope = createUnsignedTransferEnvelope(tx);
+    const fingerprint = await offlineIntentFingerprint(tx);
+    downloadJsonFile(envelope, `ecoin-unsigned-${wallet.address.slice(0, 10)}-${tx.nonce}.json`);
+    renderOfflineSigningStatus("exported", `Unsigned intent exported for ${format(tx.amount)} EC to ${short(tx.to, 11)}. It expires in 30 minutes.`, fingerprint);
+    toast("Unsigned transfer exported");
+  } catch (error) {
+    renderOfflineSigningStatus("error", error.message);
+    toast(error.message, true);
+  }
+});
+$("#offline-import-draft").addEventListener("change", async (event) => {
+  try {
+    if (vaultState === "locked") throw new Error("Unlock the vault before signing an offline draft");
+    const envelope = JSON.parse(await event.target.files[0].text());
+    const validation = validateUnsignedTransferEnvelope(envelope, { expectedFrom:wallet.address, expectedPublicKey:wallet.publicKey, expectedNonce:currentAccount.nextNonce, availableBalance:currentAccount.availableBalance, minFee:1_000 });
+    if (!validation.valid) throw new Error(validation.errors[0]);
+    const guard = evaluateTransactionGuard(validation.transaction);
+    if (guard.blocked) throw new Error("Transaction Guard blocked this imported draft");
+    const signature = await signTransaction(validation.transaction);
+    const signed = createSignedTransferEnvelope(envelope, signature);
+    const fingerprint = await offlineIntentFingerprint(validation.transaction);
+    downloadJsonFile(signed, `ecoin-signed-${wallet.address.slice(0, 10)}-${validation.transaction.nonce}.json`);
+    renderOfflineSigningStatus("signed", `Signature created locally for ${format(validation.transaction.amount)} EC. Move the signed envelope to an online E-Coin wallet for broadcast.`, fingerprint);
+    toast("Offline transfer signed and exported");
+  } catch (error) {
+    renderOfflineSigningStatus("error", error.message);
+    toast(error.message, true);
+  }
+  event.target.value = "";
+});
+$("#offline-import-signed").addEventListener("change", async (event) => {
+  try {
+    const envelope = JSON.parse(await event.target.files[0].text());
+    const tx = envelope?.transaction;
+    const account = tx?.from ? await api(`/accounts/${tx.from}`) : null;
+    const validation = validateSignedTransferEnvelope(envelope, { expectedNonce:account?.nextNonce, availableBalance:account?.availableBalance, minFee:1_000 });
+    if (!validation.valid) throw new Error(validation.errors[0]);
+    const fingerprint = await offlineIntentFingerprint((({ signature:_signature, ...intent }) => intent)(validation.transaction));
+    const result = await api("/transactions", { method:"POST", body:JSON.stringify(validation.transaction) });
+    await refresh();
+    renderOfflineSigningStatus("broadcast", `Signature accepted by the node and queued at position ${result.position}.`, fingerprint);
+    toast(`Signed envelope queued at position ${result.position}`);
+  } catch (error) {
+    renderOfflineSigningStatus("error", error.message);
+    toast(error.message, true);
+  }
   event.target.value = "";
 });
 $("#send-form").addEventListener("submit", async (event) => {
@@ -2725,14 +4860,47 @@ $("#open-contract").addEventListener("click",()=>{
   updateContractPreview();
   $("#contract-overlay").hidden=false; $("#contract-beneficiary").focus();
 });
-$("#contract-type").addEventListener("change",(event)=>{$("#vesting-fields").hidden=event.target.value!=="vesting";$("#hashlock-fields").hidden=event.target.value!=="hashlock";$("#unlock-field").hidden=event.target.value==="hashlock";updateContractPreview();});
-for (const selector of ["#contract-amount","#contract-unlock","#contract-installments","#contract-interval"]) $(selector).addEventListener("input",updateContractPreview);
-$("#contract-secret").addEventListener("input",async(event)=>{$("#contract-secret-hash").textContent=event.target.value?await sha256Text(event.target.value):"ENTER A SECRET";updateContractPreview();});
+$("#contract-type").addEventListener("change",(event)=>{$("#vesting-fields").hidden=!["vesting","milestone"].includes(event.target.value);$("#hashlock-fields").hidden=event.target.value!=="hashlock";$("#unlock-field").hidden=event.target.value==="hashlock";updateContractPreview();});
+for (const selector of ["#contract-beneficiary","#contract-amount","#contract-unlock","#contract-installments","#contract-interval","#contract-memo"]) $(selector).addEventListener("input",updateContractPreview);
+$("#contract-secret").addEventListener("input",updateContractPreview);
 $("#contract-refund").addEventListener("input",updateContractPreview);
-function updateContractPreview() {
-  const type=$("#contract-type").value; const amount=Number($("#contract-amount").value)||0; const unlock=new Date(type==="hashlock"?$("#contract-refund").value:$("#contract-unlock").value).getTime(); const installments=type==="vesting"?Number($("#contract-installments").value)||0:1; const interval=type==="vesting"?Number($("#contract-interval").value)||0:0;
-  const perRelease=installments?amount/installments:0; const finalDate=Number.isFinite(unlock)?new Date(unlock+(installments-1)*interval):null;
-  $("#contract-preview").innerHTML=`<span>RELEASE PLAN</span><div><b>${type==="vesting"?`${installments} INSTALLMENTS`:type==="hashlock"?"SECRET CLAIM / REFUND":"ONE RELEASE"}</b><strong>${perRelease>0?`${perRelease.toLocaleString(undefined,{maximumFractionDigits:6})} EC`:"ENTER AN AMOUNT"}</strong></div><small>${finalDate&&!Number.isNaN(finalDate.getTime())?(type==="hashlock"?`Beneficiary may claim before ${finalDate.toLocaleString()}; otherwise funds refund automatically.`:`First release ${new Date(unlock).toLocaleString()} · final release ${finalDate.toLocaleString()}`):"Choose a valid release time."}</small>`;
+async function updateContractPreview() {
+  const version = ++contractSimulationVersion;
+  const type=$("#contract-type").value;
+  const amountEc=Number($("#contract-amount").value)||0;
+  const amount=Math.round(amountEc*SCALE);
+  const beneficiary=$("#contract-beneficiary").value.trim();
+  const unlockTime=new Date($("#contract-unlock").value).getTime();
+  const refundTime=new Date($("#contract-refund").value).getTime();
+  const installments=["vesting","milestone"].includes(type)?Number($("#contract-installments").value)||0:1;
+  const intervalMs=["vesting","milestone"].includes(type)?Number($("#contract-interval").value)||0:0;
+  const secret=$("#contract-secret").value;
+  const secretHash=secret?await sha256Text(secret):"";
+  if (version !== contractSimulationVersion) return;
+  $("#contract-secret-hash").textContent=secretHash||"ENTER A SECRET";
+  const simulation=simulateContractDraft({ type,creator:wallet.address,beneficiary,amount,fee:activeFee,availableBalance:currentAccount.availableBalance,guardReserve:guardPolicy.reserve,unlockTime,installments,intervalMs,refundTime,hasSecret:Boolean(secret),secretLength:secret.length,knownBeneficiary:contacts.some((entry)=>entry.address===beneficiary),now:Date.now() });
+  const perRelease=installments?amountEc/installments:0;
+  const finalDate=Number.isFinite(simulation.effectiveEnd)&&simulation.effectiveEnd>0?new Date(simulation.effectiveEnd):null;
+  $("#contract-preview").innerHTML=`<span>RELEASE PLAN</span><div><b>${type==="vesting"?`${installments} INSTALLMENTS`:type==="milestone"?`${installments} MILESTONES`:type==="hashlock"?"SECRET CLAIM / REFUND":"ONE RELEASE"}</b><strong>${perRelease>0?`${perRelease.toLocaleString(undefined,{maximumFractionDigits:6})} EC`:"ENTER AN AMOUNT"}</strong></div><small>${finalDate&&!Number.isNaN(finalDate.getTime())?(type==="hashlock"?`Beneficiary may claim before ${finalDate.toLocaleString()}; otherwise funds refund automatically.`:type==="milestone"?`Both creator and beneficiary must approve each milestone before ${finalDate.toLocaleString()}.`:`First release ${new Date(unlockTime).toLocaleString()} · final release ${finalDate.toLocaleString()}`):"Choose a valid release time."}</small>`;
+  const state=simulation.blocked.length?"BLOCKED":simulation.risk>=60?"HIGH REVIEW":simulation.risk>=30?"REVIEW":"READY";
+  $("#contract-simulation-state").textContent=state;
+  $("#contract-simulation-risk").textContent=`${simulation.risk}/100`;
+  $("#contract-simulation-after").textContent=simulation.afterBalance>=0?`${format(simulation.afterBalance)} EC`:"INSUFFICIENT";
+  $("#contract-simulation-share").textContent=Number.isFinite(simulation.lockedShare)?`${(simulation.lockedShare*100).toFixed(1)}%`:"—";
+  $("#contract-simulation-final").textContent=finalDate&&!Number.isNaN(finalDate.getTime())?formatPlanTime(simulation.effectiveEnd):"—";
+  $("#contract-simulation-guidance").textContent=simulation.blocked.length?`${simulation.blocked.length} protocol or funding issue${simulation.blocked.length===1?"":"s"} must be resolved before signing.`:simulation.warnings.length?`The draft is deployable with ${simulation.warnings.length} attention item${simulation.warnings.length===1?"":"s"}. Review every cash flow and beneficiary detail.`:"The draft matches protocol limits and preserves the configured wallet reserve.";
+  const signals=[...simulation.blocked.map((text)=>({tone:"warning",text})),...simulation.warnings.map((text)=>({tone:"warning",text}))];
+  $("#contract-simulation-signals").innerHTML=signals.length?signals.map((item)=>`<div class="signal ${item.tone}">${escapeHtml(item.text)}</div>`).join(""):'<div class="signal">Protocol schedule, available balance, and reserve policy all pass.</div>';
+  $("#contract-schedule-count").textContent=`${simulation.events.length} EVENT${simulation.events.length===1?"":"S"}`;
+  $("#contract-schedule-preview").innerHTML=simulation.events.length?simulation.events.slice(0,8).map((event,index)=>`<div class="contract-schedule-row"><span>${index+1}</span><div><b>${escapeHtml(event.label)}</b><small>${escapeHtml(new Date(event.at).toLocaleString())}${event.conditional?" · CONDITIONAL":""}</small></div><strong>${escapeHtml(format(event.amount))} EC</strong></div>`).join("")+(simulation.events.length>8?`<p class="contract-schedule-more">+ ${simulation.events.length-8} additional events</p>`:""):'<p class="empty">No valid cash-flow schedule yet.</p>';
+  $("#deploy-contract").disabled=!simulation.valid;
+  $(".contract-simulation").classList.toggle("blocked",Boolean(simulation.blocked.length));
+  $(".contract-simulation").classList.toggle("caution",!simulation.blocked.length&&simulation.warnings.length>0);
+  $("#contract-warning").textContent=type==="hashlock"?"The claim secret becomes public when used. If it is not revealed before the deadline, funds return automatically to the creator.":type==="milestone"?"Each release needs both creator and beneficiary approval. If the schedule is delayed, funds remain locked until the next milestone is approved.":"Funds cannot be recovered early. The protocol releases them automatically according to the signed schedule.";
+  if (simulation.valid) {
+    const fingerprint=await sha256Text(JSON.stringify({type,creator:wallet.address,beneficiary,amount,fee:activeFee,unlockTime,installments,intervalMs,secretHash,refundTime,memo:$("#contract-memo").value.trim()}));
+    if (version === contractSimulationVersion) $("#contract-simulation-id").textContent=`DRAFT ${fingerprint.slice(0,16).toUpperCase()}`;
+  } else $("#contract-simulation-id").textContent="DRAFT NOT READY";
 }
 $("#close-contract").addEventListener("click",closeContract);
 $("#contract-form").addEventListener("submit",async(event)=>{
@@ -2744,28 +4912,56 @@ $("#contract-form").addEventListener("submit",async(event)=>{
     const unlockTime=contractType==="hashlock"?0:new Date($("#contract-unlock").value).getTime();
     if (!Number.isSafeInteger(amount)||amount<=0) throw new Error("Enter a valid contract amount");
     if (amount+activeFee>currentAccount.availableBalance) throw new Error("Contract amount plus fee exceeds available balance");
-    const installments=contractType==="vesting"?Number($("#contract-installments").value):1;
-    const intervalMs=contractType==="vesting"?Number($("#contract-interval").value):0;
+  const installments=["vesting","milestone"].includes(contractType)?Number($("#contract-installments").value):1;
+  const intervalMs=["vesting","milestone"].includes(contractType)?Number($("#contract-interval").value):0;
     const secret=contractType==="hashlock"?$("#contract-secret").value:""; if(contractType==="hashlock"&&!secret) throw new Error("Enter a claim secret");
     const secretHash=secret?await sha256Text(secret):""; const refundTime=contractType==="hashlock"?new Date($("#contract-refund").value).getTime():0;
     const deployment={contractType,from:wallet.address,beneficiary:$("#contract-beneficiary").value.trim(),amount,fee:activeFee,nonce:currentAccount.nextNonce,unlockTime,installments,intervalMs,secretHash,refundTime,memo:$("#contract-memo").value.trim(),timestamp:Date.now(),publicKey:wallet.publicKey};
     deployment.signature=await signContract(deployment);
     const result=await api("/contracts",{method:"POST",body:JSON.stringify(deployment)});
-    closeContract(); await refresh(); toast(`${contractType==="vesting"?"Vesting contract":contractType==="hashlock"?"Hashlock":"Timelock"} queued at position ${result.position}`);
+    closeContract(); await refresh(); recordSecurityEvent("contract_deployed", "Contract deployed", `${contractType} contract queued at position ${result.position}.`, "good"); toast(`${contractType==="vesting"?"Vesting contract":contractType==="hashlock"?"Hashlock":"Timelock"} queued at position ${result.position}`);
   } catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
-$("#contract-list").addEventListener("click",(event)=>{const button=event.target.closest("[data-claim]");if(!button)return;$("#claim-form").reset();$("#claim-address").value=button.dataset.claim;$("#claim-overlay").hidden=false;$("#claim-secret").focus();});
+$("#contract-list").addEventListener("click",async(event)=>{
+  const claimButton=event.target.closest("[data-claim]");
+  if (claimButton) {
+    $("#claim-form").reset(); $("#claim-address").value=claimButton.dataset.claim; $("#claim-overlay").hidden=false; $("#claim-secret").focus();
+    return;
+  }
+  const approveButton=event.target.closest("[data-approve]");
+  if (!approveButton) return;
+  try {
+    setBusy(approveButton, true);
+    await approveMilestoneContract(approveButton.dataset.approve, approveButton.dataset.milestone);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setBusy(approveButton, false);
+  }
+});
 $("#contract-flow-filter").addEventListener("change", (event) => {
   contractFlowFilter = event.target.value;
   renderContractIntelligence();
 });
-$("#contract-timeline").addEventListener("click", (event) => {
+$("#contract-timeline").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-contract-flow-claim]");
-  if (!button) return;
-  $("#claim-form").reset();
-  $("#claim-address").value = button.dataset.contractFlowClaim;
-  $("#claim-overlay").hidden = false;
-  $("#claim-secret").focus();
+  if (button) {
+    $("#claim-form").reset();
+    $("#claim-address").value = button.dataset.contractFlowClaim;
+    $("#claim-overlay").hidden = false;
+    $("#claim-secret").focus();
+    return;
+  }
+  const approve = event.target.closest("[data-contract-flow-approve]");
+  if (!approve) return;
+  try {
+    setBusy(approve, true);
+    await approveMilestoneContract(approve.dataset.contractFlowApprove, approve.dataset.contractFlowMilestone);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setBusy(approve, false);
+  }
 });
 $("#export-contract-schedule").addEventListener("click", () => {
   const rows = contractTimelineRows();
@@ -2782,7 +4978,7 @@ $("#export-contract-schedule").addEventListener("click", () => {
 $("#close-claim").addEventListener("click",closeClaim);
 $("#claim-form").addEventListener("submit",async(event)=>{
   event.preventDefault(); const button=event.currentTarget.querySelector("button[type='submit']"); setBusy(button,true);
-  try { const address=$("#claim-address").value; await api(`/contracts/${address}/claim`,{method:"POST",body:JSON.stringify({secret:$("#claim-secret").value})}); closeClaim(); await refresh(); toast("Hashlock claimed to its beneficiary"); }
+  try { const address=$("#claim-address").value; await api(`/contracts/${address}/claim`,{method:"POST",body:JSON.stringify({secret:$("#claim-secret").value})}); closeClaim(); await refresh(); recordSecurityEvent("contract_claimed", "Hashlock claimed", `Secret escrow ${short(address, 10)} was settled to the beneficiary.`, "good"); toast("Hashlock claimed to its beneficiary"); }
   catch(error){toast(error.message,true);} finally{setBusy(button,false);}
 });
 
@@ -2790,6 +4986,7 @@ $("#cancel-review").addEventListener("click", closeReview);
 $("#edit-transfer").addEventListener("click", closeReview);
 $("#close-receipt").addEventListener("click", closeReceipt);
 $("#copy-receipt").addEventListener("click", async () => { await navigator.clipboard.writeText(receiptCopyValue); toast("Receipt ID copied"); });
+$("#copy-verification").addEventListener("click", async () => { await navigator.clipboard.writeText(receiptVerificationReport || "No verification report is available"); toast("Verification report copied"); });
 $("#blocks").addEventListener("click", (event) => {
   const row = event.target.closest("button.block");
   if (row) showReceipt(row.dataset.height).catch((error) => toast(error.message,true));
@@ -2816,6 +5013,7 @@ $("#confirm-send").addEventListener("click", async (event) => {
     pendingDraft.signature = await signTransaction(pendingDraft);
     const result = await api("/transactions", { method:"POST", body:JSON.stringify(pendingDraft) });
     recordRecentTransfer(pendingDraft);
+    recordSecurityEvent("transfer_signed", "Transfer queued", `${format(pendingDraft.amount)} EC was signed for ${short(pendingDraft.to, 10)}.`, "good");
     pendingDraft = null; closeReview(); $("#send-form").reset(); updateComposer(); await refresh(); toast(`Signed and queued at position ${result.position}`); setTimeout(()=>refresh().catch(()=>{}),6500);
   } catch (error) { closeReview(); toast(`${error.message} — review the transfer again`,true); await refresh(); }
   finally { setBusy(button,false); }
@@ -2903,14 +5101,125 @@ function lockVault() {
   renderWallets();
   showWallet();
   updateComposer();
+  recordSecurityEvent("vault_locked", "Vault locked", "Private keys were sealed in the encrypted local vault.", "good");
 }
 
 function renderWallets() {
   const picker=$("#wallet-picker"); picker.innerHTML="";
   for (const candidate of wallets) { const option=document.createElement("option"); option.value=candidate.address; option.textContent=candidate.name; option.selected=candidate.address===wallet?.address; picker.append(option); }
-  $("#wallet-list").innerHTML=wallets.map((candidate)=>`<div class="contact-entry"><div><b>${escapeHtml(candidate.name)}</b><code>${escapeHtml(short(candidate.address,12))}</code></div><span class="local-badge">${candidate.address===wallet?.address ? "ACTIVE" : vaultState === "locked" ? "LOCKED" : candidate.privateKey ? "LOCAL" : "ROSTER"}</span></div>`).join("");
+  const subwalletCount = wallets.filter((candidate) => candidate.parentAddress).length;
+  const rootCount = wallets.filter((candidate) => !candidate.parentAddress).length;
+  const activeRoots = new Set(wallets.map((candidate) => candidate.rootAddress || candidate.address));
+  $("#wallet-manager-summary").textContent = `${wallets.length} wallets total · ${rootCount} roots · ${subwalletCount} subwallets · ${activeRoots.size} lineage group${activeRoots.size === 1 ? "" : "s"}.`;
+  renderWalletTree();
+  $("#wallet-list").innerHTML=wallets.map((candidate)=>`<div class="contact-entry ${candidate.parentAddress ? "subwallet-entry" : ""}"><div><b>${escapeHtml(candidate.name)}</b><code>${escapeHtml(short(candidate.address,12))}</code><small>${escapeHtml(walletDisplayKind(candidate))}${candidate.parentAddress ? ` · child of ${escapeHtml(walletParentName(candidate) || "unknown")}` : ""}</small></div><span class="local-badge">${candidate.address===wallet?.address ? "ACTIVE" : vaultState === "locked" ? "LOCKED" : candidate.privateKey ? "LOCAL" : "ROSTER"}</span></div>`).join("");
   $("#vault-state").textContent = vaultState === "locked" ? "ENCRYPTED VAULT LOCKED" : vaultState === "unlocked" ? "ENCRYPTED VAULT UNLOCKED" : "LOCAL STORAGE";
   $("#vault-action").textContent = vaultState === "none" ? "ENABLE VAULT" : vaultState === "locked" ? "UNLOCK VAULT" : "LOCK VAULT";
+}
+
+function renderWalletTree() {
+  const tree = $("#wallet-tree");
+  const summary = $("#wallet-tree-summary");
+  if (!tree || !summary) return;
+  if (!wallets.length) {
+    summary.textContent = "No wallets yet.";
+    tree.innerHTML = '<div class="wallet-tree-empty">Create a wallet to begin the hierarchy.</div>';
+    return;
+  }
+  const roots = wallets.filter((candidate) => !candidate.parentAddress);
+  const childrenByParent = new Map();
+  for (const candidate of wallets.filter((entry) => entry.parentAddress)) {
+    const parentKey = candidate.parentAddress || candidate.rootAddress || "unlinked";
+    const list = childrenByParent.get(parentKey) || [];
+    list.push(candidate);
+    childrenByParent.set(parentKey, list);
+  }
+  const groupCount = new Set(wallets.map((candidate) => candidate.rootAddress || candidate.address)).size;
+  const accountFor = (address) => portfolioEntries.find((entry) => entry.wallet.address === address)?.account ?? (address === wallet?.address ? currentAccount : null);
+  const sumDescendants = (node) => {
+    const account = accountFor(node.address);
+    const ownBalance = Number(account?.balance || 0);
+    const ownAvailable = Number(account?.availableBalance || 0);
+    const descendants = childrenByParent.get(node.address) || [];
+    const childTotals = descendants.reduce((acc, child) => {
+      const next = sumDescendants(child);
+      acc.holdings += next.holdings;
+      acc.available += next.available;
+      acc.count += 1 + next.count;
+      return acc;
+    }, { holdings: 0, available: 0, count: 0 });
+    return { holdings: ownBalance + childTotals.holdings, available: ownAvailable + childTotals.available, count: childTotals.count, account };
+  };
+  const renderBranch = (node, depth = 0) => {
+    const totals = sumDescendants(node);
+    const descendants = childrenByParent.get(node.address) || [];
+    return `<article class="wallet-branch ${node.address === wallet?.address ? "active" : ""}" data-depth="${depth}" style="margin-left:${depth * 14}px">
+      <div class="wallet-branch-head">
+        <div>
+          <b>${escapeHtml(node.name)}</b>
+          <code>${escapeHtml(short(node.address, 12))}</code>
+          <small>${escapeHtml(walletDisplayKind(node))}${node.parentAddress ? ` · child of ${escapeHtml(walletParentName(node) || "unknown")}` : ""} · ${escapeHtml(format(totals.holdings))} EC rollup${totals.count ? ` · ${totals.count} descendant${totals.count === 1 ? "" : "s"}` : ""}</small>
+        </div>
+        <div class="wallet-branch-actions">
+          <button type="button" data-wallet-open="${escapeHtml(node.address)}">OPEN</button>
+          <button type="button" data-wallet-send="${escapeHtml(node.address)}">LOAD SEND</button>
+        </div>
+      </div>
+      ${descendants.length ? `<div class="wallet-branch-children">${descendants.map((child) => {
+        const childAccount = accountFor(child.address);
+        const childDefaultAmount = childAccount ? Math.max(SCALE, Math.floor(Math.max(0, Number(childAccount.availableBalance || 0)) * 0.1)) : SCALE;
+        return `<div class="wallet-child">
+          <div>
+            <b>${escapeHtml(child.name)}</b>
+            <code>${escapeHtml(short(child.address, 12))}</code>
+            <small>${escapeHtml(walletDisplayKind(child))} · child of ${escapeHtml(node.name)}</small>
+          </div>
+          <button type="button" data-wallet-transfer="${escapeHtml(child.address)}" data-wallet-transfer-amount="${escapeHtml(String(childDefaultAmount / SCALE))}">MOVE 10%</button>
+        </div>`;
+      }).join("")}</div>` : `<div class="wallet-tree-empty">No subwallets yet.</div>`}
+    </article>`;
+  };
+  summary.textContent = `${roots.length} root wallet${roots.length === 1 ? "" : "s"} across ${groupCount} group${groupCount === 1 ? "" : "s"} · ${format(wallets.reduce((sum, candidate) => sum + Number(accountFor(candidate.address)?.balance || 0), 0))} EC tracked.`;
+  tree.innerHTML = roots.length ? roots.map((root) => renderBranch(root)).join("") : '<div class="wallet-tree-empty">Create a wallet to begin the hierarchy.</div>';
+}
+
+async function loadWalletRecipient(address) {
+  const target = wallets.find((candidate) => candidate.address === address);
+  if (!target) throw new Error("Wallet not found");
+  $("#recipient").value = target.address;
+  updateComposer();
+  document.querySelector('[data-view="wallet"]').click();
+  closeWalletManager();
+  $("#send-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  toast(`Loaded ${target.name} as the send recipient`);
+}
+
+async function loadWalletTransfer(address, amountEc = null) {
+  const target = wallets.find((candidate) => candidate.address === address);
+  if (!target) throw new Error("Wallet not found");
+  const suggestedAmount = Number.isFinite(Number(amountEc)) ? Number(amountEc) : null;
+  $("#recipient").value = target.address;
+  if (suggestedAmount && suggestedAmount > 0) $("#amount").value = suggestedAmount.toFixed(6);
+  updateComposer();
+  document.querySelector('[data-view="wallet"]').click();
+  closeWalletManager();
+  $("#send-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  toast(`Prepared transfer to ${target.name}`);
+}
+
+async function prepareSubwalletTopUp(parentAddress, childAddress, amountEc) {
+  const parent = wallets.find((candidate) => candidate.address === parentAddress);
+  const child = wallets.find((candidate) => candidate.address === childAddress);
+  if (!parent || !child) throw new Error("Subwallet route not found");
+  await activateWallet(parent.address);
+  $("#recipient").value = child.address;
+  if (Number.isFinite(Number(amountEc)) && Number(amountEc) > 0) $("#amount").value = Number(amountEc).toFixed(6);
+  $("#memo").value = `Top-up ${child.name}`.slice(0, 96);
+  updateComposer();
+  document.querySelector('[data-view="wallet"]').click();
+  closeWalletManager();
+  $("#send-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  toast(`Prepared top-up from ${parent.name} to ${child.name}`);
 }
 
 function renderContacts() {
@@ -2930,6 +5239,7 @@ function renderContacts() {
 
 async function showReceipt(height) {
   const block = await api(`/blocks/${height}`);
+  const previousBlock = block.height > 0 ? await api(`/blocks/${block.height - 1}`) : null;
   const tx = block.transactions[0];
   receiptCopyValue = tx.id || block.hash;
   $("#receipt-height").textContent = `#${block.height}`;
@@ -2948,14 +5258,136 @@ async function showReceipt(height) {
     ["STATE ROOT",block.stateRoot],
   ];
   $("#receipt-fields").innerHTML = fields.map(([label,value]) => `<div><dt>${escapeHtml(label)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd></div>`).join("");
+  try {
+    const verification = await verifySettlementReceipt(block, previousBlock, 0);
+    const passed = verification.checks.filter((check) => check.status === "pass").length;
+    $("#receipt-verification-state").textContent = verification.verified ? "VERIFIED LOCALLY" : "CHECK FAILED";
+    $("#receipt-verification-score").textContent = `${passed} / ${verification.checks.length} CHECKS`;
+    $("#receipt-verification-list").innerHTML = verification.checks.map((check) => `<article class="receipt-check ${escapeHtml(check.status)}"><span>${check.status === "pass" ? "✓" : "!"}</span><div><b>${escapeHtml(check.label)}</b><p>${escapeHtml(check.detail)}</p></div></article>`).join("");
+    $(".receipt-verification").classList.toggle("warning", !verification.verified);
+    $(".receipt-status").classList.toggle("warning", !verification.verified);
+    $(".receipt-status span").textContent = verification.verified ? "SETTLED / LOCALLY VERIFIED" : "SETTLED / VERIFICATION WARNING";
+    receiptVerificationReport = [`E-Coin settlement verification`, `Block: #${block.height}`, `Block hash: ${block.hash}`, `Transaction: ${receiptCopyValue}`, `Result: ${verification.verified ? "VERIFIED" : "FAILED"}`, ...verification.checks.map((check) => `${check.status.toUpperCase()}: ${check.label} — ${check.detail}`)].join("\n");
+  } catch (error) {
+    $("#receipt-verification-state").textContent = "UNAVAILABLE";
+    $("#receipt-verification-score").textContent = "0 / 0 CHECKS";
+    $("#receipt-verification-list").innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    $(".receipt-verification").classList.add("warning");
+    $(".receipt-status").classList.add("warning");
+    $(".receipt-status span").textContent = "SETTLED / VERIFICATION UNAVAILABLE";
+    receiptVerificationReport = `E-Coin settlement verification unavailable: ${error.message}`;
+  }
   $("#receipt-overlay").hidden=false; $("#close-receipt").focus();
 }
 
-function showWallet() { $("#address").textContent = wallet.address; $("#address").title = wallet.address; renderWallets(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderReceivePanel(); renderSessionSecurity(); }
+function showWallet() { $("#address").textContent = wallet.address; $("#address").title = wallet.address; renderWallets(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderReceivePanel(); renderSessionSecurity(); renderSecurityCenter(); renderActivityIntelligence(walletActivity); }
 async function sha256Text(value) { const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value))); return [...digest].map((byte)=>byte.toString(16).padStart(2,"0")).join(""); }
 function fromBase64Url(value) { const base64=value.replace(/-/g,"+").replace(/_/g,"/").padEnd(Math.ceil(value.length/4)*4,"="); return Uint8Array.from(atob(base64), (c)=>c.charCodeAt(0)); }
 function toBase64Url(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,""); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+
+const learnTopics = {
+  overview: {
+    focus: "Protocol",
+    risk: "LOW",
+    nextStep: "Read the summary and move to the quiz",
+    summary: "E-Coin uses a fixed supply, committed ledger history, and deterministic settlement rules. The fastest way to get comfortable is to learn the flow from wallet creation to signed transfer to block confirmation.",
+    checklist: [
+      { tone: "good", title: "Trace one transaction end-to-end", text: "Follow a transfer from draft to signature to confirmed receipt so the lifecycle becomes familiar." },
+      { tone: "", title: "Watch supply and treasury flow", text: "Remember that circulating coins come from the treasury, and fees recycle back into it." },
+      { tone: "good", title: "Use the local Data tab", text: "The market, activity, and subwallet views are there to help you reason before you sign." },
+    ],
+  },
+  wallet: {
+    focus: "Safety",
+    risk: "MEDIUM",
+    nextStep: "Open Security Center and review the vault",
+    summary: "Wallet safety is mostly operational discipline: encrypt the vault, use a long password, verify the recipient, and keep a recovery copy offline. Most losses come from urgency and mistakes, not protocol failure.",
+    checklist: [
+      { tone: "warning", title: "Keep the vault locked by default", text: "Only unlock long enough to sign, then relock before switching tasks." },
+      { tone: "good", title: "Compare address prefixes and suffixes", text: "Human verification catches clipboard swaps and typo attacks quickly." },
+      { tone: "warning", title: "Never share a seed phrase", text: "No legitimate workflow will ask you to reveal your private recovery material." },
+    ],
+  },
+  contracts: {
+    focus: "Smart contracts",
+    risk: "MEDIUM",
+    nextStep: "Experiment with a small test contract first",
+    summary: "E-Coin contracts are deterministic cash-flow tools. Timelocks, vesting, milestone approvals, and hashlocks all have explicit settlement rules that replay the same way every time.",
+    checklist: [
+      { tone: "good", title: "Match contract type to the job", text: "Use timelocks for delayed release, vesting for schedules, milestone for approvals, and hashlocks for secrets." },
+      { tone: "", title: "Model the unlock path", text: "Before signing, know exactly what must happen for funds to move or refund." },
+      { tone: "warning", title: "Test with a smaller amount first", text: "A contract that behaves correctly with a tiny amount is easier to trust at scale." },
+    ],
+  },
+  market: {
+    focus: "Execution",
+    risk: "MEDIUM",
+    nextStep: "Review the order book and execution forecast",
+    summary: "Market behavior depends on spread, depth, pressure, and your chosen side. Smart execution is usually about patience and sizing, not urgency.",
+    checklist: [
+      { tone: "good", title: "Prefer limit orders in thin books", text: "A tight limit protects you from paying too much spread." },
+      { tone: "", title: "Use the execution forecast", text: "Check fill percentage and impact before placing a large trade." },
+      { tone: "warning", title: "Stagger larger orders", text: "Breaking a big order into smaller pieces often improves average price and reduces slippage." },
+    ],
+  },
+  regulation: {
+    focus: "Compliance",
+    risk: "HIGH",
+    nextStep: "Read local rules before any real-world deployment",
+    summary: "Real crypto products can invoke payments, custody, AML/KYC, sanctions, tax, consumer protection, and licensing rules depending on jurisdiction and how the product is marketed or operated. This devnet is educational, but production behavior needs legal review.",
+    checklist: [
+      { tone: "warning", title: "Treat jurisdiction as a design input", text: "The rules can change by country, state, and product structure." },
+      { tone: "good", title: "Separate devnet from production", text: "A sandbox can teach the mechanics without handling real customer funds." },
+      { tone: "warning", title: "Get counsel early", text: "If you plan to custody, exchange, or market value transfer, compliance should be part of the architecture." },
+    ],
+  },
+  offline: {
+    focus: "Operational security",
+    risk: "HIGH",
+    nextStep: "Try offline signing on a small transfer",
+    summary: "Offline signing reduces exposure by separating intent creation, signing, and broadcast. It is one of the strongest ways to protect high-value wallets from a compromised online machine.",
+    checklist: [
+      { tone: "good", title: "Verify the fingerprint on both devices", text: "Recipient, amount, fee, and expiry must match before you sign." },
+      { tone: "warning", title: "Keep private keys off the online device", text: "Only the unsigned intent and final signed envelope should cross that boundary." },
+      { tone: "good", title: "Use short-lived envelopes", text: "Short expiries reduce the window where a leaked transfer could still be used." },
+    ],
+  },
+};
+
+function renderLearnLab() {
+  const topicKey = $("#learn-topic")?.value || "overview";
+  const topic = learnTopics[topicKey] || learnTopics.overview;
+  const summaryNode = $("#learn-lab-summary");
+  const checklistNode = $("#learn-lab-checklist");
+  if (!summaryNode || !checklistNode) return;
+  const walletRisk = vaultState === "locked" ? "MEDIUM" : vaultState === "none" ? "HIGH" : "LOW";
+  const walletRiskNote = vaultState === "locked"
+    ? "Your wallet is protected, but you still need to unlock intentionally when signing."
+    : vaultState === "none"
+      ? "The vault is not enabled yet, so the safest next step is to encrypt it."
+      : "The vault is available, so keep your active session short and deliberate.";
+  $("#learn-focus").textContent = topic.focus;
+  $("#learn-focus-note").textContent = `${topicKey === "overview" ? "A quick orientation for new users." : "Topic-specific guidance with practical examples."}`;
+  $("#learn-risk").textContent = topic.risk;
+  $("#learn-risk-note").textContent = `${walletRisk} current wallet posture · ${walletRiskNote}`;
+  $("#learn-next-step").textContent = topic.nextStep;
+  $("#learn-next-step-note").textContent = topicKey === "market"
+    ? `${marketData?.openOrders ?? 0} open orders and ${feeQuote.pressure ? `${Math.round((feeQuote.pressure || 0) * 100)}% mempool pressure` : "live fee data"} are already visible in the app.`
+    : topicKey === "wallet"
+      ? `${securityJournal.length} local security event${securityJournal.length === 1 ? "" : "s"} are currently recorded.`
+      : "Use the quiz below to test the idea immediately.";
+  summaryNode.textContent = topic.summary;
+  checklistNode.innerHTML = topic.checklist.map((item, index) => `
+    <article class="learn-lab-item ${item.tone}">
+      <span>${index + 1}</span>
+      <div>
+        <b>${escapeHtml(item.title)}</b>
+        <p>${escapeHtml(item.text)}</p>
+      </div>
+    </article>
+  `).join("");
+}
 
 const quiz=[
   {question:"Where do faucet coins come from?",options:["New issuance each time","The existing Genesis Treasury","Transaction fees"],answer:1},
@@ -2982,12 +5414,14 @@ $("#quiz-options").addEventListener("click",(event)=>{
   $("#quiz-score").textContent=`SCORE ${quizScore}`;
   setTimeout(()=>{ if (quizIndex===quiz.length-1) { toast(`Knowledge check complete: ${quizScore}/${quiz.length}`); quizIndex=0; quizScore=0; } else quizIndex++; renderQuiz(); },900);
 });
+$("#learn-topic")?.addEventListener("change", renderLearnLab);
 document.querySelectorAll(".nav-link").forEach((button)=>button.addEventListener("click",()=>{
   const view=button.dataset.view; $("#wallet-view").hidden=view!=="wallet"; $("#learn-view").hidden=view!=="learn"; $("#data-view").hidden=view!=="data";
   document.querySelectorAll(".nav-link").forEach((item)=>item.classList.toggle("active",item===button));
   history.replaceState(null,"",`#${view}`); window.scrollTo({top:0,behavior:"smooth"});
 }));
 renderQuiz();
+renderLearnLab();
 
-try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); loadSessionSecurity(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); renderSessionSecurity(); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(checkSessionSecurity,1_000); setInterval(() => refresh().catch(()=>{}), 15_000); }
+try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); loadSessionSecurity(); loadRebalanceConfig(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); loadActivityRules(); loadStressScenario(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); renderSessionSecurity(); renderActivityIntelligence(walletActivity); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(checkSessionSecurity,1_000); setInterval(() => refresh().catch(()=>{}), 15_000); }
 catch (error) { $("#address").textContent = "Wallet unavailable"; toast(error.message, true); }

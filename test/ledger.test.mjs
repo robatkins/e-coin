@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { Ledger, SCALE, DEFAULT_FEE, MEMPOOL_TTL_MS, MAX_SUPPLY, TREASURY_ADDRESS, addressFromPublicJwk, canonicalTransaction, canonicalContractDeployment, sha256 } from "../src/ledger.mjs";
+import { Ledger, SCALE, DEFAULT_FEE, MEMPOOL_TTL_MS, MAX_SUPPLY, TREASURY_ADDRESS, addressFromPublicJwk, canonicalTransaction, canonicalContractDeployment, canonicalContractApproval, sha256 } from "../src/ledger.mjs";
 
 function wallet() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -24,6 +24,18 @@ function signedTimelock(creator,beneficiary,overrides={}) {
 function signedVesting(creator,beneficiary,overrides={}) {
   const tx={contractType:"vesting",from:creator.address,beneficiary:beneficiary.address,amount:3*SCALE,fee:DEFAULT_FEE,nonce:1,unlockTime:Date.now()+10_000,installments:3,intervalMs:60_000,memo:"salary",timestamp:Date.now(),publicKey:creator.publicKey,...overrides};
   tx.signature=sign(null,Buffer.from(canonicalContractDeployment(tx)),creator.privateKey).toString("base64url");
+  return tx;
+}
+
+function signedMilestone(creator,beneficiary,overrides={}) {
+  const tx={contractType:"milestone",from:creator.address,beneficiary:beneficiary.address,amount:3*SCALE,fee:DEFAULT_FEE,nonce:1,unlockTime:Date.now()+10_000,installments:3,intervalMs:60_000,memo:"project escrow",timestamp:Date.now(),publicKey:creator.publicKey,...overrides};
+  tx.signature=sign(null,Buffer.from(canonicalContractDeployment(tx)),creator.privateKey).toString("base64url");
+  return tx;
+}
+
+function signedMilestoneApproval(contractAddress, approver, nonce=1, milestone=1) {
+  const tx = { contractAddress, from:approver.address, milestone, fee:DEFAULT_FEE, nonce, timestamp:Date.now(), publicKey:approver.publicKey };
+  tx.signature = sign(null, Buffer.from(canonicalContractApproval(tx)), approver.privateKey).toString("base64url");
   return tx;
 }
 
@@ -208,6 +220,21 @@ test("fee priority schedules eligible senders without breaking nonce order", () 
   assert.equal(ledger.verifyPending(),true);
 });
 
+test("fee intelligence reports ordered tiers, queue position, and settlement estimates", () => {
+  const ledger=new Ledger(); const alice=wallet(); const carol=wallet(); const bob=wallet();
+  ledger.fund(alice.address,5*SCALE); ledger.fund(carol.address,5*SCALE);
+  ledger.queue(signedTransfer(alice,bob,{amount:SCALE,fee:DEFAULT_FEE,nonce:1}));
+  ledger.queue(signedTransfer(carol,bob,{amount:SCALE,fee:5*DEFAULT_FEE,nonce:1}));
+  const quote=ledger.getFeeQuote();
+  assert.equal(quote.economy<=quote.standard,true);
+  assert.equal(quote.standard<=quote.priority,true);
+  assert.equal(quote.tiers.economy.queueAhead>=quote.tiers.priority.queueAhead,true);
+  assert.equal(quote.tiers.standard.estimatedBlocks>=1,true);
+  assert.equal(quote.averageBlockTimeMs>=1_000,true);
+  assert.match(quote.confidence,/^(low|medium|high)$/);
+  assert.equal(ledger.getFeeQuote(8_000).averageBlockTimeMs,8_000);
+});
+
 test("replace-by-fee preserves payment intent and expires stale entries", () => {
   const ledger=new Ledger(); const alice=wallet(); const bob=wallet(); ledger.fund(alice.address,3*SCALE);
   const original=ledger.queue(signedTransfer(alice,bob,{amount:SCALE,fee:DEFAULT_FEE})).transaction;
@@ -247,6 +274,22 @@ test("vesting contracts release deterministic installments",()=>{
   ledger.executeMatureContracts(deployment.unlockTime+2*deployment.intervalMs+1);
   assert.equal(ledger.getAccount(bob.address).balance,3*SCALE);
   assert.equal(ledger.getContract(queued.contractAddress).status,"released");
+  assert.equal(ledger.verifyIntegrity(),true);
+});
+
+test("milestone contracts require both approvals before each release",()=>{
+  const ledger=new Ledger(); const alice=wallet(); const bob=wallet(); ledger.fund(alice.address,4*SCALE); ledger.fund(bob.address,2*SCALE);
+  const deployment=signedMilestone(alice,bob); const queued=ledger.queueContract(deployment).transaction; ledger.produceBlock();
+  assert.equal(ledger.getContract(queued.contractAddress).contractType,"milestone");
+  assert.equal(ledger.getContract(queued.contractAddress).approvalRound,1);
+  ledger.approveMilestoneContract(signedMilestoneApproval(queued.contractAddress,alice,2,1));
+  assert.equal(ledger.getContract(queued.contractAddress).creatorApprovedRound,1);
+  ledger.approveMilestoneContract(signedMilestoneApproval(queued.contractAddress,bob,1,1));
+  assert.equal(ledger.getContract(queued.contractAddress).beneficiaryApprovedRound,1);
+  ledger.executeMatureContracts(deployment.unlockTime+1);
+  assert.equal(ledger.getAccount(bob.address).balance,3*SCALE-DEFAULT_FEE);
+  assert.equal(ledger.getContract(queued.contractAddress).releasedInstallments,1);
+  assert.equal(ledger.getContract(queued.contractAddress).approvalRound,2);
   assert.equal(ledger.verifyIntegrity(),true);
 });
 

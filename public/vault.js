@@ -9,8 +9,11 @@ function toBase64Url(bytes) {
 }
 
 function fromBase64Url(value) {
+  if (typeof value !== "string" || !value.length || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("Invalid Base64URL encoding");
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+  const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+  if (toBase64Url(bytes) !== value) throw new Error("Non-canonical Base64URL encoding");
+  return bytes;
 }
 
 function stripWalletSecrets(wallet) {
