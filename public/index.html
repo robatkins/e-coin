@@ -283,6 +283,46 @@
 
     <section id="data-view" class="data-view" hidden>
       <div class="data-hero"><div><p class="eyebrow">MARKET + PROTOCOL TELEMETRY</p><h1>See the system<br><em>as it moves.</em></h1></div><div class="price-lockup"><span>EC / USD</span><b id="data-price">$0.000000</b><small id="data-mode">DEVNET MARKET</small></div></div>
+      <div class="data-brief" id="data-brief">
+        <div class="data-brief-head">
+          <div>
+            <span>EXECUTIVE BRIEF</span>
+            <h2>What the system is telling you right now</h2>
+          </div>
+          <small id="data-brief-note">Waiting for live market and wallet signals.</small>
+        </div>
+        <div class="data-brief-grid">
+          <div><span>NETWORK</span><b id="data-brief-network">—</b><small id="data-brief-network-note">Signal quality and fee pressure.</small></div>
+          <div><span>PORTFOLIO</span><b id="data-brief-portfolio">—</b><small id="data-brief-portfolio-note">Exposure, liquidity, and concentration.</small></div>
+          <div><span>WATCHLIST</span><b id="data-brief-watchlist">—</b><small id="data-brief-watchlist-note">Counterparty coverage and risk.</small></div>
+          <div><span>NEXT STEP</span><b id="data-brief-next">—</b><small id="data-brief-next-note">A practical move the interface recommends.</small></div>
+        </div>
+        <div class="data-brief-actions">
+          <button type="button" data-data-brief-target="orderbook-panel">OPEN ORDER BOOK</button>
+          <button type="button" data-data-brief-target="portfolio-panel">REVIEW PORTFOLIO</button>
+          <button type="button" data-data-brief-target="watchlist-panel">CHECK WATCHLIST</button>
+          <button type="button" data-data-brief-target="security-center">OPEN SECURITY</button>
+        </div>
+      </div>
+      <div class="data-forecast" id="data-forecast-panel">
+        <div class="data-forecast-head">
+          <div>
+            <span>FORECAST LENS</span>
+            <h2>Short-horizon outlook</h2>
+          </div>
+          <small id="data-forecast-note">Waiting for enough price history to project the next move.</small>
+        </div>
+        <svg id="data-forecast-chart" viewBox="0 0 720 220" preserveAspectRatio="none" aria-label="Forecast chart">
+          <g class="chart-gridlines"></g>
+          <path class="area"></path>
+          <polyline></polyline>
+        </svg>
+        <div class="data-forecast-grid">
+          <div><span>24H PRICE PATH</span><b id="data-forecast-price">—</b><small id="data-forecast-price-note">Projected direction and confidence.</small></div>
+          <div><span>EXECUTION QUALITY</span><b id="data-forecast-exec">—</b><small id="data-forecast-exec-note">How clean a buy or sell is likely to be.</small></div>
+          <div><span>PROTOCOL PRESSURE</span><b id="data-forecast-pressure">—</b><small id="data-forecast-pressure-note">Network congestion and settlement conditions.</small></div>
+        </div>
+      </div>
       <div class="data-metrics"><div><span>MARKET CAP</span><b id="data-market-cap">—</b></div><div><span>USD VOLUME</span><b id="data-volume">—</b></div><div><span>CIRCULATING</span><b id="data-circulating">—</b></div><div><span>TREASURY</span><b id="data-treasury">—</b></div><div><span>PURCHASES</span><b id="data-purchases">—</b></div><div><span>BLOCK CAPACITY</span><b id="data-capacity">—</b></div></div>
       <div class="data-intelligence">
         <div class="intel-score"><span>SYSTEM HEALTH</span><b id="data-health-score">—</b><small id="data-health-note">Analyzing the network.</small></div>
@@ -294,6 +334,41 @@
           <div class="data-actions-head"><span>NEXT BEST ACTIONS</span><small>Auto-ranked from live signals</small></div>
           <div id="data-actions" class="data-actions"><p class="empty">Action guidance will appear here.</p></div>
         </div>
+      </div>
+      <div class="data-anomaly" id="data-anomaly-panel">
+        <div class="data-anomaly-head">
+          <div>
+            <span>ANOMALY REVIEW</span>
+            <h2>Signals that need a second look</h2>
+          </div>
+          <small id="data-anomaly-note">The detector is waiting for enough local evidence to classify unusual behavior.</small>
+        </div>
+        <div class="data-anomaly-grid">
+          <div><span>ALERTS</span><b id="data-anomaly-count">—</b><small id="data-anomaly-count-note">Count of unusual signals.</small></div>
+          <div><span>SEVERITY</span><b id="data-anomaly-grade">—</b><small id="data-anomaly-grade-note">How urgent the signal mix is.</small></div>
+          <div><span>CONFIDENCE</span><b id="data-anomaly-confidence">—</b><small id="data-anomaly-confidence-note">How much evidence supports the review.</small></div>
+        </div>
+        <div class="data-anomaly-list" id="data-anomaly-list"><p class="empty">No anomalies have been identified yet.</p></div>
+      </div>
+      <div class="data-signal" id="data-signal-panel">
+        <div class="data-signal-head">
+          <div>
+            <span>SIGNAL CONTROL</span>
+            <h2>How sensitive should the review be?</h2>
+          </div>
+          <small id="data-signal-note">Tune the detector and forecast lens to the level of noise you want to tolerate.</small>
+        </div>
+        <div class="data-signal-controls">
+          <label><span>SENSITIVITY</span><select id="data-signal-sensitivity"><option value="broad">BROAD</option><option value="balanced">BALANCED</option><option value="tight">TIGHT</option></select></label>
+          <label><span>FORECAST WINDOW</span><select id="data-signal-forecast"><option value="6">6 POINTS</option><option value="12">12 POINTS</option><option value="24">24 POINTS</option></select></label>
+          <label><span>FEED LIMIT</span><select id="data-signal-limit"><option value="5">5 ITEMS</option><option value="8">8 ITEMS</option><option value="12">12 ITEMS</option></select></label>
+        </div>
+        <div class="data-signal-grid">
+          <div><span>MODE</span><b id="data-signal-mode">—</b><small id="data-signal-mode-note">The current review posture.</small></div>
+          <div><span>WINDOW</span><b id="data-signal-window">—</b><small id="data-signal-window-note">How far the detector looks back.</small></div>
+          <div><span>FEED</span><b id="data-signal-feed-count">—</b><small id="data-signal-feed-count-note">How many notable events are retained.</small></div>
+        </div>
+        <div class="data-signal-feed" id="data-signal-feed"><p class="empty">No notable signals have been recorded yet.</p></div>
       </div>
       <div class="portfolio-panel" id="portfolio-panel">
         <div class="section-title"><div><p class="eyebrow">LOCAL PORTFOLIO</p><h2>All wallets, one view</h2></div><button class="button ghost" id="refresh-portfolio" type="button">REFRESH PORTFOLIO</button></div>
@@ -377,11 +452,22 @@
           <div><span>LARGEST SHARE</span><b id="rebalance-before">—</b><small id="rebalance-after">— after plan</small></div>
           <div><span>PLAN STATUS</span><b id="rebalance-status">WAITING</b><small>Every transfer still requires review</small></div>
         </div>
+        <div class="rebalance-outlook">
+          <div class="rebalance-outlook-head">
+            <span>PLAN OUTLOOK</span>
+            <small id="rebalance-outlook-note">Waiting for an allocation forecast.</small>
+          </div>
+          <div class="rebalance-outlook-grid">
+            <div><span>POSTURE</span><b id="rebalance-posture">—</b><small id="rebalance-posture-note">How healthy the plan looks.</small></div>
+            <div><span>EFFICIENCY</span><b id="rebalance-efficiency">—</b><small id="rebalance-efficiency-note">Volume relative to fees.</small></div>
+            <div><span>NEXT MOVE</span><b id="rebalance-next-move">—</b><small id="rebalance-next-move-note">A useful follow-up action.</small></div>
+          </div>
+        </div>
         <p id="rebalance-guidance" class="search-summary">Refresh the portfolio to generate an allocation plan.</p>
         <div id="rebalance-list" class="rebalance-list"><p class="empty">No rebalancing moves proposed.</p></div>
         <div class="rebalance-actions"><button class="button ghost" id="rebalance-copy" type="button" disabled>COPY PLAN</button><button class="button primary" id="rebalance-load-next" type="button" disabled>LOAD NEXT TRANSFER</button></div>
       </div>
-      <div class="stress-lab-panel">
+      <div class="stress-lab-panel" id="stress-lab-panel">
         <div class="section-title">
           <div><p class="eyebrow">LIQUIDITY STRESS LAB</p><h2>Forecast wallet resilience</h2></div>
           <small>LOCAL SCENARIO MODEL</small>
@@ -392,11 +478,56 @@
           <label><span>EXTRA OUTFLOW</span><input id="stress-extra-spend" type="number" min="0" step="0.000001" value="0"><small>EC</small></label>
           <label class="stress-toggle"><input id="stress-use-history" type="checkbox" checked><span>INCLUDE RECENT SPENDING PACE</span></label>
         </div>
+        <div class="stress-presets">
+          <button type="button" data-stress-preset="calm">CALM</button>
+          <button type="button" data-stress-preset="selloff">SELLOFF</button>
+          <button type="button" data-stress-preset="fee-spike">FEE SPIKE</button>
+          <button type="button" data-stress-preset="treasury-drain">TREASURY DRAIN</button>
+        </div>
+        <div class="stress-template-shell">
+          <div class="stress-template-tools">
+            <input id="stress-template-name" type="text" maxlength="40" placeholder="Save current scenario as a template">
+            <button class="button ghost" id="stress-template-save" type="button">SAVE TEMPLATE</button>
+          </div>
+          <div class="stress-template-head">
+            <span>SCENARIO TEMPLATES</span>
+            <small id="stress-template-note">Saved templates are stored locally for this wallet.</small>
+          </div>
+          <div id="stress-template-list" class="stress-template-list"><p class="empty">No templates saved yet.</p></div>
+        </div>
         <div class="stress-metrics">
           <div><span>PROJECTED LIQUID</span><b id="stress-projected">—</b><small id="stress-projected-usd">—</small></div>
           <div><span>COMMITMENTS</span><b id="stress-commitments">—</b><small id="stress-commitment-count">—</small></div>
           <div><span>COVERAGE</span><b id="stress-coverage">—</b><small id="stress-runway">—</small></div>
           <div><span>RESILIENCE</span><b id="stress-score">—</b><small id="stress-grade">ANALYZING</small></div>
+        </div>
+        <div class="stress-insight" id="stress-insight-panel">
+          <div>
+            <span>SCENARIO NAME</span>
+            <b id="stress-scenario-name">BASELINE</b>
+            <small id="stress-scenario-note">Choose a preset or tune the controls to explore a different outcome.</small>
+          </div>
+          <div>
+            <span>EXPECTED MOVE</span>
+            <b id="stress-scenario-move">—</b>
+            <small id="stress-scenario-move-note">The simulator will translate the shock into a practical action.</small>
+          </div>
+          <div>
+            <span>BEST RESPONSE</span>
+            <b id="stress-scenario-response">—</b>
+            <small id="stress-scenario-response-note">Recommended response under the selected scenario.</small>
+          </div>
+        </div>
+        <div class="stress-compare" id="stress-compare-panel">
+          <div class="stress-compare-head">
+            <span>BASELINE VS SCENARIO</span>
+            <small id="stress-compare-note">Compare the current model against a no-shock baseline.</small>
+          </div>
+          <div class="stress-compare-grid">
+            <div><span>PROJECTED LIQUID</span><b id="stress-compare-liquid">—</b><small id="stress-compare-liquid-note">Difference from the baseline plan.</small></div>
+            <div><span>RESILIENCE DELTA</span><b id="stress-compare-resilience">—</b><small id="stress-compare-resilience-note">How much the shock moves the score.</small></div>
+            <div><span>RUNWAY DELTA</span><b id="stress-compare-runway">—</b><small id="stress-compare-runway-note">Change in modeled runway days.</small></div>
+          </div>
         </div>
         <svg id="stress-chart" class="stress-chart" viewBox="0 0 760 220" role="img" aria-label="Projected wallet liquidity"><g class="chart-gridlines"></g><path class="area" d=""></path><polyline points=""></polyline><g class="stress-markers"></g></svg>
         <div class="stress-footer">
@@ -482,6 +613,17 @@
         <div class="counterparty-summary">
           <p id="counterparty-summary">No counterparties analyzed yet.</p>
           <div id="counterparty-top" class="counterparty-top"></div>
+        </div>
+        <div class="counterparty-outlook">
+          <div class="counterparty-outlook-head">
+            <span>RELATIONSHIP OUTLOOK</span>
+            <small id="counterparty-outlook-note">Waiting for relationship intelligence.</small>
+          </div>
+          <div class="counterparty-outlook-grid">
+            <div><span>RISK MIX</span><b id="counterparty-risk-mix">—</b><small id="counterparty-risk-mix-note">How risky the network looks overall.</small></div>
+            <div><span>TRUST MIX</span><b id="counterparty-trust-mix">—</b><small id="counterparty-trust-mix-note">How many peers look routine.</small></div>
+            <div><span>NEXT STEP</span><b id="counterparty-next-step">—</b><small id="counterparty-next-step-note">A useful follow-up action.</small></div>
+          </div>
         </div>
         <div id="counterparty-list" class="counterparty-list"><p class="empty">No counterparties yet.</p></div>
       </div>
@@ -652,6 +794,41 @@
             <p id="learn-lab-summary">Select a topic to see a focused explanation and checklist.</p>
             <div id="learn-lab-checklist" class="learn-lab-checklist"><p class="empty">Guidance will appear here.</p></div>
           </div>
+        </div>
+      </div>
+      <div class="learn-progress-panel">
+        <div class="section-title compact">
+          <div><p class="eyebrow">LEARNING PROGRESS</p><h2>Track what you have already learned.</h2></div>
+          <small id="learn-progress-note">Progress is saved locally per wallet.</small>
+        </div>
+        <div class="learn-progress-grid">
+          <div><span>TOPICS COVERED</span><b id="learn-topics-covered">0</b><small id="learn-topics-note">Topics you have explored in this wallet.</small></div>
+          <div><span>BEST QUIZ</span><b id="learn-best-quiz">0 / 0</b><small id="learn-best-quiz-note">Your best knowledge-check score so far.</small></div>
+          <div><span>VISITS</span><b id="learn-visits">0</b><small id="learn-visits-note">How many times you have opened the Learn lab.</small></div>
+          <div><span>CURRENT PATH</span><b id="learn-current-path">OVERVIEW</b><small id="learn-current-path-note">The topic most recently studied.</small></div>
+        </div>
+      </div>
+      <div class="learn-simulator">
+        <div class="section-title compact">
+          <div><p class="eyebrow">SITUATION SIMULATOR</p><h2>Practice decisions before you sign.</h2></div>
+          <small>WHAT WOULD YOU DO?</small>
+        </div>
+        <div class="learn-simulator-grid">
+          <label for="learn-scenario">SCENARIO
+            <select id="learn-scenario">
+              <option value="wallet_locked">Wallet is locked and you need to send now</option>
+              <option value="wide_spread">The spread is wide and you want to buy</option>
+              <option value="stale_backup">Your backup is older than 30 days</option>
+              <option value="risky_counterparty">A new counterparty appears in activity</option>
+              <option value="rebalance_needed">One wallet is carrying most of the funds</option>
+            </select>
+          </label>
+          <div class="learn-simulator-output">
+            <div><span>RISK</span><b id="learn-sim-risk">—</b><small id="learn-sim-risk-note">Scenario risk will appear here.</small></div>
+            <div><span>BEST PRACTICE</span><b id="learn-sim-practice">—</b><small id="learn-sim-practice-note">A clear action suggestion.</small></div>
+            <div><span>WHY IT MATTERS</span><b id="learn-sim-reason">—</b><small id="learn-sim-reason-note">The reasoning behind the suggestion.</small></div>
+          </div>
+          <div id="learn-simulator-tip" class="learn-simulator-tip">Choose a scenario to practice operational judgment.</div>
         </div>
       </div>
       <div class="safety-panel"><div><p class="eyebrow">WALLET SAFETY</p><h2>Three habits beat clever attackers.</h2></div><ol><li><b>Encrypt and back up.</b> Enable the wallet vault, use a unique password, and keep an offline backup. NIST guidance favors long, memorable passwords and discourages brittle rules that make people reuse weak ones.</li><li><b>Verify the destination.</b> Compare the beginning and end of an address, review new-recipient warnings, and treat QR codes or copied addresses as untrusted until checked.</li><li><b>Understand finality.</b> A signed transfer or deployed contract cannot be quietly reversed. Test with a small amount first, and remember that crypto scams often rely on urgency, impersonation, and promises of easy money.</li></ol></div>
