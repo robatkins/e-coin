@@ -1,93 +1,118 @@
 # E-Coin
 
-E-Coin is an original, account-based cryptocurrency experiment with a browser wallet. It is not Bitcoin and does not reuse Bitcoin's code, transaction model, address format, mining, or protocol.
+E-Coin is an original, account-based cryptocurrency devnet with a browser wallet, smart contracts, an internal USD market, and agentic wallet intelligence. It is not Bitcoin and does not reuse Bitcoin's code, transaction model, address format, mining, or protocol.
+
+E-Coin is currently a single-node **Aurora Devnet** sandbox. Test coins have no real monetary value, the internal USD market does not charge real USD, and this project is not production financial infrastructure.
 
 ## Screenshots
 
-![E-Coin wallet screenshot 1](./screenshot1.png)
-![E-Coin wallet screenshot 2](./screenshot2.png)
-![E-Coin wallet screenshot 3](./screenshot3.png)
-![E-Coin wallet screenshot 3](./screenshot4.png)
-![E-Coin wallet screenshot 3](./screenshot5.png)
-![E-Coin wallet screenshot 3](./screenshot6.png)
+![E-Coin wallet overview](./screenshot1.png)
+![E-Coin data dashboard](./screenshot2.png)
+![E-Coin smart contracts](./screenshot3.png)
+![E-Coin wallet intelligence](./screenshot4.png)
+![E-Coin Learn tab](./screenshot5.png)
+![E-Coin order book and market tools](./screenshot6.png)
 
-## Current build (protocol 8)
+## What It Includes
 
-- Ed25519 wallet identities and `ec1…` addresses
-- Integer micro-coin accounting (`1 EC = 1,000,000 µEC`)
-- Signed transfers with sequential account nonces
-- Fee burning and deterministic state roots
-- Hash-linked blocks persisted to `data/ledger.json`
-- Browser-local, non-custodial wallet with backup/import
-- Development faucet and live chain explorer
-- One faucet claim per address, derived from committed history
-- Live chain-integrity verification and wallet-aware activity rows
-- Maximum-spend calculation and cryptographic backup keypair validation
-- Replay-based integrity checks for balances, nonces, signatures, fees, and state roots
-- Wallet intelligence for received, sent, fee, counterparty, and activity totals
-- Pre-signing transfer analysis with recipient history, fee ratio, large-transfer warnings, and projected balance
-- Browser-local address book with reusable destinations and removal controls
-- Clickable ledger activity with settlement receipts and copyable receipt identifiers
-- Block lookup by height/hash and transaction lookup by ID
-- Persistent nonce-aware mempool with reserved spendable balances
-- Six-second timed block production with multi-transaction batching
-- Visible pending transfers and a live next-block countdown
-- Mempool signature/state revalidation after node restarts
-- Constant-time indexes for blocks, transactions, faucet claims, account activity, and pending balances
-- Fee-priority block scheduling that preserves per-sender nonce order
-- Adaptive economy, standard, and priority fee guidance
-- Idempotent transaction resubmission and paginated block history
-- Fast health checks, scheduled deep audits, and throughput/batch metrics
-- Bounded 10,000-entry mempool with ten-minute expiry
-- Adaptive 250–2,000 transaction block capacity
-- Safe replace-by-fee with payment-intent preservation
-- Live server-sent block/mempool events with polling fallback
-- Instant wallet settlement updates and connection-state visibility
-- Versioned SHA-256-checksummed ledger snapshots
-- Verified one-generation backup recovery with fail-closed startup
-- Automatic migration from legacy raw snapshots
-- Incremental explorer pagination with deduplicated live updates
-- Browser-local multi-wallet creation, naming, switching, import, and per-wallet backup
-- Signed deterministic time-lock contract deployments through the mempool
-- Separate committed contract-state roots in every new block
-- Automatic beneficiary release after the programmed unlock time
-- Wallet-scoped contract portfolio and locked-value views
-- Fixed 20,000,000 EC genesis supply held by the local Genesis Treasury wallet
-- Faucet distributions that move treasury funds instead of minting coins
-- Adaptive 250-2,000 transaction blocks with per-sender fairness limits
-- Scheduled vesting contracts with 2-52 deterministic installments
-- Encrypted multi-wallet vault and loopback-only treasury bootstrap
-- Write rate limiting, browser security headers, and no-store key delivery
-- Interactive Learn tab with protocol lessons, safety guidance, and a knowledge quiz
-- Treasury-backed internal USD quotes and idempotent devnet purchases
-- Protocol fees recycled into the Genesis Treasury instead of burned
-- Data dashboard with price, market cap, volume, liquidity, and network charts
-- Contract schedule, active-count, and execution-batch safety limits
-- Hash-locked escrow with public preimage claims and automatic expiry refunds
-- Per-sender pending-transaction caps and secret-clearing wallet controls
-- Wallet intelligence with safe-spend guidance, fee recommendations, and upcoming-event summaries
-- Ledger explorer search across blocks, transactions, accounts, and contracts
-- Data-tab health scoring, price momentum, and recommendation summaries
-- Local address watchlist with seeded counterparties and live balance snapshots
-- Watchlist delta alerts that compare the latest refresh against the previous snapshot
-- Smart wallet actions that surface the best next step for the current balance, fee pressure, and contract state
-- Smart transfer drafts that remember recent outgoing payments per wallet for one-click reuse
-- Live alert center for upcoming contract deadlines and watched-account timelines
-- Reusable transfer templates for routine payments and fast draft restoration
-- Signed internal order book with limit buy/sell orders, partial fills, open orders, and trade tape
+### Protocol And Ledger
 
-The current node seals nonce-ordered, fee-prioritized transaction batches every six seconds. It is deliberately a **single-node devnet**, not yet a decentralized or production-safe network.
+- Fixed 20,000,000 EC genesis supply held by the local Genesis Treasury wallet.
+- Account-based `ec1...` addresses backed by Ed25519 wallet identities.
+- Integer micro-coin accounting where `1 EC = 1,000,000 uEC`.
+- Signed transfers with sequential nonces, deterministic state roots, and hash-linked blocks.
+- Six-second block production with nonce-ordered, fee-prioritized transaction batches.
+- Adaptive 250-2,000 transaction block capacity with per-sender fairness limits.
+- Bounded 10,000-entry mempool with ten-minute expiry and restart revalidation.
+- Safe replace-by-fee with payment-intent preservation.
+- Versioned SHA-256-checksummed ledger snapshots with fail-closed recovery.
+- Replay-based integrity checks for balances, nonces, signatures, fees, and state roots.
+- Ledger explorer search across blocks, transactions, accounts, and contracts.
+
+### Wallet
+
+- Browser-local, non-custodial wallet with encrypted multi-wallet vault support.
+- Multi-wallet creation, naming, switching, import, export, and per-wallet backup.
+- Nested subwallets with visible parent/child lineage and branch analytics.
+- Safe-spend guidance, fee recommendations, wallet diagnostics, and activity intelligence.
+- Address book, reusable transfer templates, recent outgoing payments, and payment requests.
+- Batch transfer composer with atomic queueing.
+- Offline transfer draft/export/sign/broadcast flow.
+- Settlement receipts with independent receipt verification.
+- Transaction Guard policies for daily limits, reserves, and known-contact checks.
+- Security Center with recovery state, session locking, local security journal, and recommendations.
+
+### Smart Contracts
+
+- Signed deterministic contract deployments through the mempool.
+- Separate committed contract-state roots in every block.
+- Time-lock contracts with automatic beneficiary release after unlock.
+- Scheduled vesting contracts with 2-52 deterministic installments.
+- Milestone contracts with approval-aware release simulation.
+- Hash-locked escrow with public preimage claims and expiry refunds.
+- Contract portfolio, cash-flow timeline, schedule metrics, and draft simulation.
+- Contract safety limits for active counts, schedules, and execution batches.
+
+### Market And Data
+
+- Treasury-backed internal USD quotes and idempotent devnet purchases.
+- Faucet distributions and market buys move existing treasury coins instead of minting.
+- Protocol fees recycle into the Genesis Treasury.
+- Signed internal order book with limit buy/sell orders, partial fills, open orders, and trade tape.
+- Data dashboard with price, market cap, volume, treasury, liquidity, and network charts.
+- Market alerts, price history, load chart, market tape, and order-book assistant.
+- Data-tab health scoring, price momentum, execution lens, anomaly review, and signal control.
+
+### Agentic Intelligence
+
+- Data Copilot that synthesizes wallet, market, counterparty, protocol, and signal state into a next-step plan.
+- Copilot confidence, recommendation shift, dominant driver, next-turn forecast, flip risk, and watchpoint.
+- Per-wallet Copilot decision journal and feedback loop.
+- Agent Workbench with ranked operating playbooks and one-click navigation to the relevant app surface.
+- Objective steering for Safety, Execution, Liquidity, and Growth.
+- Rehearsal layer that previews likely outcome, blockers, autonomy level, and next checkpoint.
+- Per-wallet task memory that marks opened playbook items as reviewed and re-ranks follow-up work.
+- Browser-local signal feed with auto-tuning, retained evidence, watchlist deltas, and counterparty posture.
+
+### Learn
+
+- Learn tab with protocol overview, supply model, market explanation, smart contract guidance, and safety basics.
+- Legal and regulatory education covering money transmission, AML/KYC, sanctions, consumer protection, and tax caveats.
+- Information-security guidance for passwords, recovery material, phishing, urgent requests, and address verification.
+- Knowledge quiz and local progress tracking.
 
 ## Run
 
-Requires Node.js 20 or newer; there are no third-party runtime dependencies.
+Requires Node.js 20 or newer. There are no third-party runtime dependencies.
 
 ```powershell
 npm start
 ```
 
-Open <http://localhost:8787>. Run tests with `npm test`.
+Open [http://localhost:8787](http://localhost:8787).
 
-## Protocol direction
+For development with Node's watch mode:
 
-The next milestones are a mempool with timed block production, validator identities, a BFT-style proof-of-stake consensus layer, peer synchronization, encrypted wallet storage, and protocol versioning. Do not attach real monetary value to this devnet.
+```powershell
+npm run dev
+```
+
+Run the test suite:
+
+```powershell
+npm test
+```
+
+## Project Layout
+
+- `src/ledger.mjs` - ledger, mempool, market, treasury, contracts, snapshots, and protocol rules.
+- `src/server.mjs` - local HTTP API, static app serving, event stream, and treasury bootstrap.
+- `public/` - browser wallet, Data page, Learn tab, styles, and local wallet intelligence modules.
+- `test/` - protocol, contract, mempool, recovery, vault, receipt, and wallet-flow tests.
+- `data/` - local devnet ledger snapshot storage.
+
+## Current Status
+
+The current build is protocol 8. It is deliberately a local single-node devnet for experimentation, education, and wallet UX iteration. Do not attach real monetary value to E-Coin devnet balances, internal USD quotes, or simulated market activity.
+
+Useful next directions include peer synchronization, validator identities, proof-of-stake or BFT-style consensus, richer smart-contract tooling, stronger UI test coverage, and production-grade threat modeling.
