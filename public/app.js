@@ -31,6 +31,10 @@ const stressScenarioKey = "ecoin.stressScenario.v1";
 const rebalanceConfigKey = "ecoin.rebalanceConfig.v1";
 const learnProgressKey = "ecoin.learnProgress.v1";
 const dataSignalKey = "ecoin.dataSignals.v1";
+const dataCopilotKey = "ecoin.dataCopilot.v1";
+const dataCopilotFeedbackKey = "ecoin.dataCopilot.feedback.v1";
+const dataAgentObjectiveKey = "ecoin.dataAgent.objective.v1";
+const dataAgentMemoryKey = "ecoin.dataAgent.memory.v1";
 const stressScenarioTemplatesKey = "ecoin.stressScenarioTemplates.v1";
 let wallet;
 let wallets = [];
@@ -102,6 +106,15 @@ let dataSignalByWallet = {};
 let dataSignalFeed = [];
 let dataSignalSeen = {};
 let dataSignalConfig = { sensitivity:"balanced", forecastHorizon:12, feedLimit:8 };
+let dataCopilotByWallet = {};
+let dataCopilotJournal = [];
+let dataCopilotSignature = "";
+let dataCopilotFeedbackByWallet = {};
+let dataCopilotFeedback = { helpful:0, notHelpful:0, accepted:0, dismissed:0, lastAction:null, lastSignature:null };
+let dataAgentObjectivesByWallet = {};
+let dataAgentObjective = "safety";
+let dataAgentMemoryByWallet = {};
+let dataAgentMemory = { reviewed: {}, opened: 0, lastOpenedAt: null, lastTaskId: null };
 let stressScenarioTemplatesByWallet = {};
 let stressScenarioTemplates = [];
 let learnProgressByWallet = {};
@@ -1644,6 +1657,75 @@ function loadDataSignals() {
   dataSignalSeen = stored.seen && typeof stored.seen === "object" ? stored.seen : {};
 }
 
+function loadDataCopilot() {
+  try {
+    dataCopilotByWallet = JSON.parse(localStorage.getItem(dataCopilotKey) || "{}") || {};
+  } catch {
+    dataCopilotByWallet = {};
+  }
+  const stored = dataCopilotByWallet[wallet?.address] || {};
+  dataCopilotSignature = typeof stored.signature === "string" ? stored.signature : "";
+  dataCopilotJournal = Array.isArray(stored.journal)
+    ? stored.journal.filter((item) => item && typeof item.goal === "string" && typeof item.move === "string")
+    : [];
+}
+
+function loadDataCopilotFeedback() {
+  try {
+    dataCopilotFeedbackByWallet = JSON.parse(localStorage.getItem(dataCopilotFeedbackKey) || "{}") || {};
+  } catch {
+    dataCopilotFeedbackByWallet = {};
+  }
+  const stored = dataCopilotFeedbackByWallet[wallet?.address] || {};
+  dataCopilotFeedback = {
+    helpful: Math.max(0, Number(stored.helpful) || 0),
+    notHelpful: Math.max(0, Number(stored.notHelpful) || 0),
+    accepted: Math.max(0, Number(stored.accepted) || 0),
+    dismissed: Math.max(0, Number(stored.dismissed) || 0),
+    lastAction: typeof stored.lastAction === "string" ? stored.lastAction : null,
+    lastSignature: typeof stored.lastSignature === "string" ? stored.lastSignature : null,
+  };
+}
+
+function loadDataAgentObjective() {
+  try {
+    dataAgentObjectivesByWallet = JSON.parse(localStorage.getItem(dataAgentObjectiveKey) || "{}") || {};
+  } catch {
+    dataAgentObjectivesByWallet = {};
+  }
+  const stored = dataAgentObjectivesByWallet[wallet?.address];
+  dataAgentObjective = ["safety", "execution", "liquidity", "growth"].includes(stored) ? stored : "safety";
+  const selector = $("#data-agent-objective");
+  if (selector) selector.value = dataAgentObjective;
+}
+
+function loadDataAgentMemory() {
+  try {
+    dataAgentMemoryByWallet = JSON.parse(localStorage.getItem(dataAgentMemoryKey) || "{}") || {};
+  } catch {
+    dataAgentMemoryByWallet = {};
+  }
+  const stored = dataAgentMemoryByWallet[wallet?.address] || {};
+  const cutoff = Date.now() - 24 * 60 * 60_000;
+  const reviewed = {};
+  for (const [id, entry] of Object.entries(stored.reviewed || {})) {
+    const reviewedAt = Number(entry?.reviewedAt || entry);
+    if (id && Number.isFinite(reviewedAt) && reviewedAt >= cutoff) {
+      reviewed[id] = {
+        reviewedAt,
+        count: Math.max(1, Number(entry?.count) || 1),
+        title: typeof entry?.title === "string" ? entry.title : id,
+      };
+    }
+  }
+  dataAgentMemory = {
+    reviewed,
+    opened: Math.max(0, Number(stored.opened) || 0),
+    lastOpenedAt: Number.isFinite(Number(stored.lastOpenedAt)) ? Number(stored.lastOpenedAt) : null,
+    lastTaskId: typeof stored.lastTaskId === "string" ? stored.lastTaskId : null,
+  };
+}
+
 function loadRebalanceConfig() {
   try {
     const stored = JSON.parse(localStorage.getItem(rebalanceConfigKey) || "{}") || {};
@@ -1767,6 +1849,38 @@ function saveDataSignals() {
     seen: dataSignalSeen,
   };
   localStorage.setItem(dataSignalKey, JSON.stringify(dataSignalByWallet));
+}
+
+function saveDataCopilot() {
+  if (!wallet?.address) return;
+  dataCopilotByWallet[wallet.address] = {
+    signature: dataCopilotSignature,
+    journal: dataCopilotJournal.slice(0, 8),
+  };
+  localStorage.setItem(dataCopilotKey, JSON.stringify(dataCopilotByWallet));
+}
+
+function saveDataCopilotFeedback() {
+  if (!wallet?.address) return;
+  dataCopilotFeedbackByWallet[wallet.address] = { ...dataCopilotFeedback };
+  localStorage.setItem(dataCopilotFeedbackKey, JSON.stringify(dataCopilotFeedbackByWallet));
+}
+
+function saveDataAgentObjective() {
+  if (!wallet?.address) return;
+  dataAgentObjectivesByWallet[wallet.address] = dataAgentObjective;
+  localStorage.setItem(dataAgentObjectiveKey, JSON.stringify(dataAgentObjectivesByWallet));
+}
+
+function saveDataAgentMemory() {
+  if (!wallet?.address) return;
+  const cutoff = Date.now() - 24 * 60 * 60_000;
+  const reviewed = Object.fromEntries(Object.entries(dataAgentMemory.reviewed || {})
+    .filter(([, entry]) => Number(entry?.reviewedAt) >= cutoff)
+    .slice(-40));
+  dataAgentMemory = { ...dataAgentMemory, reviewed };
+  dataAgentMemoryByWallet[wallet.address] = dataAgentMemory;
+  localStorage.setItem(dataAgentMemoryKey, JSON.stringify(dataAgentMemoryByWallet));
 }
 
 function saveRebalanceConfig() {
@@ -3521,7 +3635,7 @@ function renderDataBrief(market, status, blocks, priceValues) {
   const riskyPeers = walletCounterpartyInsights.filter((item) => item.posture === "risky").length;
   const watchCoverage = watchlist.length ? watchedPeers / watchlist.length : 0;
   const eta = formatDuration(Math.max(0, nextBlockAt - Date.now()));
-  const etaLabel = eta === "—" || eta === "â€”" ? "awaiting next seal" : eta;
+  const etaLabel = eta === "—" ? "awaiting next seal" : eta;
   const networkLabel = !status.chainValid
     ? "DEGRADED"
     : pressure > 0.75
@@ -3685,6 +3799,31 @@ function signalProfile() {
   return { pressure: 0.75, spread: 0.025, concentration: 0.6, drift: 8, label: "BALANCED" };
 }
 
+function autoTuneDataSignalConfig() {
+  const warningCount = dataSignalFeed.filter((item) => item.severity === "warning" || item.severity === "critical").length;
+  const forecastCount = dataSignalFeed.filter((item) => item.kind === "forecast").length;
+  const anomalyCount = dataSignalFeed.filter((item) => item.kind === "anomaly").length;
+  if (!dataSignalFeed.length) {
+    dataSignalConfig.sensitivity = "balanced";
+    dataSignalConfig.forecastHorizon = 12;
+    dataSignalConfig.feedLimit = 8;
+  } else if (warningCount > Math.max(2, Math.ceil(dataSignalFeed.length / 2))) {
+    dataSignalConfig.sensitivity = "tight";
+    dataSignalConfig.forecastHorizon = 6;
+    dataSignalConfig.feedLimit = 5;
+  } else if (forecastCount > anomalyCount) {
+    dataSignalConfig.sensitivity = "broad";
+    dataSignalConfig.forecastHorizon = 24;
+    dataSignalConfig.feedLimit = 12;
+  } else {
+    dataSignalConfig.sensitivity = "balanced";
+    dataSignalConfig.forecastHorizon = 12;
+    dataSignalConfig.feedLimit = 8;
+  }
+  saveDataSignals();
+  renderDataSignals();
+}
+
 function pushDataSignal(entry) {
   const signature = `${entry.kind}:${entry.label}:${entry.detail}`;
   if (dataSignalSeen[signature]) return false;
@@ -3697,6 +3836,8 @@ function pushDataSignal(entry) {
 }
 
 function renderDataSignals() {
+  const briefTitle = $("#data-signal-brief-title");
+  const briefNote = $("#data-signal-brief-note");
   const modeNode = $("#data-signal-mode");
   const modeNote = $("#data-signal-mode-note");
   const windowNode = $("#data-signal-window");
@@ -3705,14 +3846,25 @@ function renderDataSignals() {
   const feedCountNote = $("#data-signal-feed-count-note");
   const feed = $("#data-signal-feed");
   const panel = $("#data-signal-panel");
+  const agentButton = $("#data-signal-autotune");
   const sensitivity = $("#data-signal-sensitivity");
   const forecast = $("#data-signal-forecast");
   const limit = $("#data-signal-limit");
-  if (!modeNode || !modeNote || !windowNode || !windowNote || !feedCountNode || !feedCountNote || !feed || !panel || !sensitivity || !forecast || !limit) return;
+  if (!briefTitle || !briefNote || !modeNode || !modeNote || !windowNode || !windowNote || !feedCountNode || !feedCountNote || !feed || !panel || !sensitivity || !forecast || !limit) return;
   sensitivity.value = dataSignalConfig.sensitivity;
   forecast.value = String(dataSignalConfig.forecastHorizon);
   limit.value = String(dataSignalConfig.feedLimit);
   const profile = signalProfile();
+  const warningCount = dataSignalFeed.filter((item) => item.severity === "warning" || item.severity === "critical").length;
+  const forecastCount = dataSignalFeed.filter((item) => item.kind === "forecast").length;
+  const anomalyCount = dataSignalFeed.filter((item) => item.kind === "anomaly").length;
+  const suggestion = !dataSignalFeed.length
+    ? { title: "BALANCED DEFAULT", note: "Start balanced until the engine has enough evidence. That keeps the detector useful without spamming low-value signals." }
+    : warningCount > Math.max(2, Math.ceil(dataSignalFeed.length / 2))
+      ? { title: "GO TIGHTER", note: "Warnings dominate the feed. Tight sensitivity and a shorter window will reduce noise and surface urgent changes sooner." }
+      : forecastCount > anomalyCount
+        ? { title: "WIDEN THE WINDOW", note: "Forecast signals are outpacing anomalies. A broader posture will keep trend context visible." }
+        : { title: "STAY BALANCED", note: "The feed looks mixed, so balanced settings keep the signal-to-noise ratio healthy." };
   modeNode.textContent = profile.label;
   modeNote.textContent = profile.label === "TIGHT"
     ? "Lower noise tolerance and faster escalation."
@@ -3723,6 +3875,9 @@ function renderDataSignals() {
   windowNote.textContent = `Forecast and anomaly logic use the latest ${dataSignalConfig.forecastHorizon} sample points.`;
   feedCountNode.textContent = String(dataSignalFeed.length);
   feedCountNote.textContent = dataSignalFeed.length ? "Recent notable events are retained locally." : "Signals will appear here as the detector learns.";
+  briefTitle.textContent = suggestion.title;
+  briefNote.textContent = suggestion.note;
+  if (agentButton) agentButton.textContent = dataSignalFeed.length ? "AUTO-TUNE" : "KEEP BALANCED";
   feed.innerHTML = dataSignalFeed.length ? dataSignalFeed.slice(0, dataSignalConfig.feedLimit).map((item) => `
     <article class="data-signal-item ${item.severity}">
       <span>${escapeHtml(item.kind === "forecast" ? "F" : "A")}</span>
@@ -3890,6 +4045,810 @@ function renderDataAnomalies(market, status, blocks, priceValues) {
   }
 }
 
+function renderDataLens(market, status, priceValues) {
+  const note = $("#data-lens-note");
+  const regimeNode = $("#data-lens-regime");
+  const regimeNote = $("#data-lens-regime-note");
+  const modeNode = $("#data-lens-mode");
+  const modeNote = $("#data-lens-mode-note");
+  const riskNode = $("#data-lens-risk");
+  const riskNote = $("#data-lens-risk-note");
+  const confidenceNode = $("#data-lens-confidence");
+  const confidenceNote = $("#data-lens-confidence-note");
+  const panel = $("#data-lens-panel");
+  if (!note || !regimeNode || !regimeNote || !modeNode || !modeNote || !riskNode || !riskNote || !confidenceNode || !confidenceNote || !panel) return;
+  const regime = analyzeMarketRegime(market, status, priceValues);
+  const pressure = Number(feeQuote.pressure || 0);
+  const price = Number(market.priceUsd || 0);
+  const spreadUsd = Number(market.spreadMicroUsd || 0) / 1_000_000;
+  const spreadPct = price > 0 ? spreadUsd / price : 0;
+  const treasuryRatio = Number(market.treasuryBalance || 0) / Math.max(Number(status.maxSupply || 0), 1);
+  const riskParts = [];
+  if (!status.chainValid) riskParts.push("ledger health");
+  if (pressure > 0.75) riskParts.push("fee pressure");
+  if (spreadPct > 0.02) riskParts.push("wide spread");
+  if (treasuryRatio < 0.25) riskParts.push("thin treasury");
+  if (priceValues.length >= 3) {
+    const recent = priceValues.slice(-3).map(Number).filter(Number.isFinite);
+    if (recent.length === 3 && Math.abs((recent[2] - recent[0]) / Math.max(recent[0], 1)) > 0.03) riskParts.push("fast drift");
+  }
+  const mode = !status.chainValid
+    ? "PAUSE TRADING"
+    : pressure > 0.75 || spreadPct > 0.03
+      ? "LIMIT-ONLY"
+      : regime.label === "UPTREND"
+        ? "STAGED BUYS"
+        : regime.label === "SOFTENING"
+          ? "PATIENT SELLS"
+          : treasuryRatio < 0.25
+            ? "SMALL SLICES"
+            : "MID-MARKET LIMITS";
+  const confidence = Math.max(35, Math.min(98, Math.round(
+    (regime.confidence === "High confidence" ? 80 : regime.confidence === "Medium confidence" ? 65 : 50)
+    + (status.chainValid ? 8 : -22)
+    + (pressure < 0.5 ? 6 : -6)
+    + (spreadPct < 0.02 ? 6 : -8)
+  )));
+  note.textContent = `${regime.label} · ${mode} · ${confidence}% confidence.`;
+  regimeNode.textContent = regime.label;
+  regimeNote.textContent = regime.note;
+  modeNode.textContent = mode;
+  modeNote.textContent = regime.tactic;
+  riskNode.textContent = riskParts.length ? riskParts.slice(0, 3).join(" · ") : "balanced conditions";
+  riskNote.textContent = riskParts.length ? "These are the main forces shaping execution quality." : "No strong execution headwinds are visible.";
+  confidenceNode.textContent = `${confidence}%`;
+  confidenceNote.textContent = regime.confidence;
+  panel.classList.toggle("warning", !status.chainValid || pressure > 0.75 || spreadPct > 0.03);
+}
+
+function renderDataTimeline(market, status, priceValues) {
+  const note = $("#data-timeline-note");
+  const list = $("#data-timeline-list");
+  const panel = $("#data-timeline-panel");
+  if (!note || !list || !panel) return;
+  const regime = analyzeMarketRegime(market, status, priceValues);
+  const alerts = marketAlerts.slice(0, 4).map((alert) => ({
+    tone: alert.triggered ? "warning" : "neutral",
+    title: alert.name || "Market alert",
+    body: `${alert.direction === "above" ? "Rises above" : "Falls below"} ${usd(alert.priceUsd, 6)}`,
+    meta: `${relativeTime(alert.createdAt)} · ${alert.triggered ? "triggered" : "watching"}`,
+    time: alert.lastTriggeredAt ? relativeTime(alert.lastTriggeredAt) : relativeTime(alert.createdAt),
+  }));
+  const signals = dataSignalFeed.slice(0, 4).map((entry) => ({
+    tone: entry.severity === "critical" ? "warning" : entry.severity === "warning" ? "warning" : "good",
+    title: entry.label,
+    body: entry.text,
+    meta: `${entry.kind === "forecast" ? "Forecast" : "Anomaly"} · ${relativeTime(entry.createdAt)}`,
+    time: relativeTime(entry.createdAt),
+  }));
+  const recent = [...alerts, ...signals].slice(0, 6);
+  note.textContent = `${regime.label} · ${recent.length} recent signal${recent.length === 1 ? "" : "s"} in the live queue.`;
+  list.innerHTML = recent.length ? recent.map((item) => `
+    <article class="data-timeline-item ${item.tone}">
+      <span>${escapeHtml(item.time)}</span>
+      <div>
+        <b>${escapeHtml(item.title)}</b>
+        <p>${escapeHtml(item.body)}</p>
+        <small>${escapeHtml(item.meta)}</small>
+      </div>
+    </article>
+  `).join("") : '<p class="empty">No recent signals yet.</p>';
+  panel.classList.toggle("warning", recent.some((item) => item.tone === "warning"));
+}
+
+function buildDataCopilot(market, status, blocks, priceValues) {
+  const regime = analyzeMarketRegime(market, status, priceValues);
+  const momentum = summarizeMomentum(priceValues);
+  const healthScore = computeSystemHealth(status, market, blocks);
+  const pressure = Number(feeQuote.pressure || 0);
+  const spreadUsd = Number(market.spreadMicroUsd || 0) / 1_000_000;
+  const price = Number(market.priceUsd || priceValues.at(-1) || 0);
+  const spreadPct = price > 0 ? spreadUsd / price : 0;
+  const treasuryRatio = Number(market.treasuryBalance || 0) / Math.max(Number(status.maxSupply || 0), 1);
+  const branchEntries = portfolioEntries.length ? portfolioEntries : [];
+  const childBranches = branchEntries.filter((entry) => entry.wallet.parentAddress);
+  const totalHoldings = branchEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.holdings || 0)), 0);
+  const availableHoldings = branchEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.availableBalance || 0)), 0);
+  const liquidShare = totalHoldings ? availableHoldings / totalHoldings : 1;
+  const riskyPeers = walletCounterpartyInsights.filter((item) => item.posture === "risky");
+  const watchedPeers = walletCounterpartyInsights.filter((item) => item.isWatched);
+  const signalCount = dataSignalFeed.length;
+  const warningSignals = dataSignalFeed.filter((item) => item.severity === "warning" || item.severity === "critical").length;
+  const signalSummary = signalCount
+    ? `${signalCount} live signal${signalCount === 1 ? " is" : "s are"} retained locally, with ${warningSignals} requiring caution.`
+    : "The signal feed is quiet, which makes this a good time to keep the controls balanced and let fresh evidence accumulate.";
+  const spreadSummary = spreadPct > 0.02
+    ? `The order book spread is ${(spreadPct * 100).toFixed(2)}% of spot, so aggressive market orders are paying a visible liquidity tax.`
+    : "";
+
+  if (!status.chainValid) {
+    return {
+      warning: true,
+      goal: "Restore ledger trust",
+      goalNote: "No new execution should outrun chain integrity.",
+      move: "Open Security",
+      moveNote: "Validate the ledger, then revisit market and wallet actions.",
+      why: `The chain is not validating cleanly, so every downstream balance, price, and routing decision needs to stay provisional until integrity is restored. ${signalSummary}`,
+      steps: [
+        { label: "Open the Security center", target: "security-center" },
+        { label: "Review the anomaly list", target: "data-anomaly-panel" },
+        { label: "Hold off on new sends", target: "portfolio-panel" },
+      ],
+      note: "Integrity comes first.",
+    };
+  }
+
+  if (pressure > 0.75) {
+    return {
+      warning: true,
+      goal: "Protect execution quality",
+      goalNote: "High queue pressure increases fee risk and timing variance.",
+      move: "Tune wallet fees",
+      moveNote: "Smaller sends and priority awareness are safer right now.",
+      why: `Mempool pressure is ${Math.round(pressure * 100)}%, so the network is congested enough to punish urgent or oversized transactions. ${signalSummary}`,
+      steps: [
+        { label: "Open the portfolio and fee context", target: "portfolio-panel" },
+        { label: "Keep urgent sends small", target: "order-form" },
+        { label: "Re-check the order book before buying", target: "orderbook-panel" },
+      ],
+      note: "Fee pressure is the dominant signal.",
+    };
+  }
+
+  if (spreadPct > 0.02) {
+    return {
+      warning: true,
+      goal: "Prefer passive execution",
+      goalNote: "The book is thin enough that patience should beat aggression.",
+      move: "Open Order Book",
+      moveNote: "Use limits or join the best side instead of crossing the spread.",
+      why: `The market spread is wide enough to increase slippage. ${spreadSummary} ${signalSummary}`,
+      steps: [
+        { label: "Inspect the best bid and ask", target: "orderbook-panel" },
+        { label: "Stage fills with limit orders", target: "order-form" },
+        { label: "Watch the market view for narrowing", target: "data-forecast-panel" },
+      ],
+      note: "Liquidity is the limiting factor.",
+    };
+  }
+
+  if (momentum.delta > 2) {
+    return {
+      warning: false,
+      goal: "Stage entries into strength",
+      goalNote: "Momentum is positive, but the safest path is still incremental.",
+      move: "Open Market",
+      moveNote: "Use small staged buys or well-placed limits.",
+      why: `Momentum is positive and the market regime is ${regime.label.toLowerCase()}, so the next logical move is to keep buys disciplined rather than chase the tape. ${signalSummary}`,
+      steps: [
+        { label: "Review the order book depth", target: "orderbook-panel" },
+        { label: "Use the quote fill helper", target: "market-quote-fill" },
+        { label: "Keep a treasury buffer for follow-through", target: "portfolio-panel" },
+      ],
+      note: "Trend is supportive, but not a reason to overcommit.",
+    };
+  }
+
+  if (momentum.delta < -2) {
+    return {
+      warning: true,
+      goal: "Preserve flexibility",
+      goalNote: "Weak momentum argues for patience and smaller commitments.",
+      move: "Stay in Data",
+      moveNote: "Let the market stabilize before pushing size.",
+      why: `Momentum has softened, so the better move is to protect optionality and wait for cleaner confirmation. ${signalSummary}`,
+      steps: [
+        { label: "Review forecast and regime context", target: "data-lens-panel" },
+        { label: "Keep orders limit-only for now", target: "order-form" },
+        { label: "Watch for a reversal in the timeline", target: "data-timeline-panel" },
+      ],
+      note: "Waiting is the intelligent move.",
+    };
+  }
+
+  if (treasuryRatio < 0.25) {
+    return {
+      warning: true,
+      goal: "Defend treasury runway",
+      goalNote: "Treasury supply is thin enough to justify extra care.",
+      move: "Review Treasury",
+      moveNote: "Stage purchases and avoid unnecessary treasury drain.",
+      why: `Only ${(treasuryRatio * 100).toFixed(1)}% of max supply remains in treasury, so large buys may move the quote and reduce flexibility more than expected. ${signalSummary}`,
+      steps: [
+        { label: "Open the market forecast", target: "data-forecast-panel" },
+        { label: "Check treasury and supply metrics", target: "portfolio-panel" },
+        { label: "Prefer staged purchases over one-shot fills", target: "order-form" },
+      ],
+      note: "Treasury preservation comes first.",
+    };
+  }
+
+  if (childBranches.length && liquidShare < 0.4) {
+    return {
+      warning: true,
+      goal: "Rebalance subwallet liquidity",
+      goalNote: "The hierarchy needs more usable balance at the edges.",
+      move: "Open Subwallets",
+      moveNote: "Refill the branches that are closest to reserve pressure.",
+      why: `You have ${childBranches.length} subwallet${childBranches.length === 1 ? "" : "s"}, but only ${(liquidShare * 100).toFixed(1)}% of holdings are immediately liquid. That makes branch-level planning more important than raw top-line balance. ${signalSummary}`,
+      steps: [
+        { label: "Review branch balances", target: "subwallet-panel" },
+        { label: "Move funds toward constrained branches", target: "subwallet-panel" },
+        { label: "Re-run the activity forecast after rebalancing", target: "activity-panel" },
+      ],
+      note: "Distribution is the issue, not total value.",
+    };
+  }
+
+  if (riskyPeers.length) {
+    return {
+      warning: true,
+      goal: "Review risky counterparties",
+      goalNote: "The relationship graph already has enough information to justify caution.",
+      move: "Open Watchlist",
+      moveNote: "Confirm the risky peers before routing anything sensitive.",
+      why: `There ${riskyPeers.length === 1 ? "is" : "are"} ${riskyPeers.length} flagged counterparty entr${riskyPeers.length === 1 ? "y" : "ies"} and ${watchedPeers.length} watched relationship${watchedPeers.length === 1 ? "" : "s"}, so a quick review is smarter than trusting the graph on autopilot. ${signalSummary}`,
+      steps: [
+        { label: "Open the watchlist", target: "watchlist-panel" },
+        { label: "Inspect the flagged relationships", target: "counterparty-panel" },
+        { label: "Confirm the safest route before signing", target: "portfolio-panel" },
+      ],
+      note: "Relationship risk is visible.",
+    };
+  }
+
+  return {
+    warning: healthScore < 72,
+    goal: healthScore >= 85 ? "Keep the system ready" : "Strengthen the current posture",
+    goalNote: healthScore >= 85
+      ? "The app is in a balanced operating state."
+      : "There is enough friction to justify a quick systems check.",
+    move: healthScore >= 85 ? "Stay in Data" : "Open Portfolio",
+    moveNote: healthScore >= 85
+      ? "Keep monitoring and let the next opportunity come to you."
+      : "A portfolio sanity check will surface any hidden imbalance.",
+    why: `Health is ${healthScore}/100, the market regime is ${regime.label.toLowerCase()}, and no single execution issue is dominating the picture. ${signalSummary}`,
+    steps: [
+      { label: "Keep watching the intelligence panels", target: "data-timeline-panel" },
+      { label: "Use Signal Control if you want more or less noise", target: "data-signal-panel" },
+      { label: "Open the portfolio only if your allocation needs a reset", target: "portfolio-panel" },
+    ],
+    note: "Balanced conditions favor discipline.",
+  };
+}
+
+function renderDataCopilot(market, status, blocks, priceValues) {
+  const panel = $("#data-copilot-panel");
+  const note = $("#data-copilot-note");
+  const goalNode = $("#data-copilot-goal");
+  const goalNote = $("#data-copilot-goal-note");
+  const moveNode = $("#data-copilot-move");
+  const moveNote = $("#data-copilot-move-note");
+  const confidenceNode = $("#data-copilot-confidence");
+  const confidenceNote = $("#data-copilot-confidence-note");
+  const shiftNode = $("#data-copilot-shift");
+  const shiftNote = $("#data-copilot-shift-note");
+  const driverNode = $("#data-copilot-driver");
+  const driverNote = $("#data-copilot-driver-note");
+  const nextTurnNode = $("#data-copilot-next-turn");
+  const nextTurnNote = $("#data-copilot-next-turn-note");
+  const flipRiskNode = $("#data-copilot-flip-risk");
+  const flipRiskNote = $("#data-copilot-flip-risk-note");
+  const watchpointNode = $("#data-copilot-watchpoint");
+  const watchpointNote = $("#data-copilot-watchpoint-note");
+  const feedbackPanel = $("#data-copilot-feedback-panel");
+  const learningNode = $("#data-copilot-learning");
+  const learningNote = $("#data-copilot-learning-note");
+  const helpfulNode = $("#data-copilot-helpful");
+  const helpfulNote = $("#data-copilot-helpful-note");
+  const unhelpfulNode = $("#data-copilot-unhelpful");
+  const unhelpfulNote = $("#data-copilot-unhelpful-note");
+  const whyNode = $("#data-copilot-why");
+  const stepsNode = $("#data-copilot-steps");
+  const journalPanel = $("#data-copilot-journal-panel");
+  const journalStatus = $("#data-copilot-journal-status");
+  const journalLead = $("#data-copilot-journal-lead");
+  const journalList = $("#data-copilot-journal-list");
+  if (!panel || !note || !goalNode || !goalNote || !moveNode || !moveNote || !confidenceNode || !confidenceNote || !shiftNode || !shiftNote || !driverNode || !driverNote || !nextTurnNode || !nextTurnNote || !flipRiskNode || !flipRiskNote || !watchpointNode || !watchpointNote || !whyNode || !stepsNode || !journalPanel || !journalStatus || !journalLead || !journalList) return;
+  const plan = buildDataCopilot(market, status, blocks, priceValues);
+  const healthScore = computeSystemHealth(status, market, blocks);
+  const momentum = summarizeMomentum(priceValues);
+  const pressure = Number(feeQuote.pressure || 0);
+  const spreadUsd = Number(market.spreadMicroUsd || 0) / 1_000_000;
+  const spreadPct = Number(market.priceUsd || 0) > 0 ? spreadUsd / Number(market.priceUsd || 1) : 0;
+  const treasuryRatio = Number(market.treasuryBalance || 0) / Math.max(Number(status.maxSupply || 0), 1);
+  const riskyCount = walletCounterpartyInsights.filter((item) => item.posture === "risky").length;
+  const watchedCount = walletCounterpartyInsights.filter((item) => item.isWatched).length;
+  const signalCount = dataSignalFeed.length;
+  const warningSignals = dataSignalFeed.filter((item) => item.severity === "warning" || item.severity === "critical").length;
+  const planHistory = dataCopilotJournal.length ? dataCopilotJournal : [];
+  const lastPlan = planHistory[0];
+  const priorPlan = planHistory[1];
+  const helpful = Math.max(0, Number(dataCopilotFeedback.helpful) || 0);
+  const notHelpful = Math.max(0, Number(dataCopilotFeedback.notHelpful) || 0);
+  const accepted = Math.max(0, Number(dataCopilotFeedback.accepted) || 0);
+  const dismissed = Math.max(0, Number(dataCopilotFeedback.dismissed) || 0);
+  const feedbackTotal = helpful + notHelpful + accepted + dismissed;
+  const positiveFeedback = helpful + accepted;
+  const negativeFeedback = notHelpful + dismissed;
+  const feedbackBalance = feedbackTotal ? Math.round(((positiveFeedback - negativeFeedback) / feedbackTotal) * 100) : 0;
+  const feedbackBias = Math.max(-8, Math.min(8, Math.round(feedbackBalance / 14)));
+  const confidence = Math.max(25, Math.min(99, Math.round(
+    healthScore * 0.42
+    + (plan.warning ? 6 : 12)
+    + Math.max(0, 18 - warningSignals * 3)
+    + Math.max(0, 10 - riskyCount * 2)
+    + Math.max(0, 8 - watchedCount)
+    + (pressure > 0.75 ? -10 : pressure > 0.4 ? -3 : 4)
+    + (spreadPct > 0.02 ? -9 : spreadPct > 0.01 ? -4 : 3)
+    + (treasuryRatio < 0.25 ? -6 : 3)
+    + (momentum.delta > 2 || momentum.delta < -2 ? 2 : 0)
+    + feedbackBias
+  )));
+  const learnedConfidence = Math.max(25, Math.min(99, confidence + Math.round(feedbackBias / 2)));
+  const signature = [
+    plan.warning ? "warn" : "steady",
+    plan.goal,
+    plan.move,
+    dataSignalConfig.sensitivity,
+    String(dataSignalConfig.forecastHorizon),
+    String(dataSignalConfig.feedLimit),
+    Number(pressure).toFixed(2),
+    Number(market.spreadMicroUsd || 0).toFixed(0),
+    Number(market.treasuryBalance || 0).toFixed(0),
+    signalCount,
+    riskyCount,
+    watchedCount,
+    Math.round((momentum.delta || 0) * 10) / 10,
+  ].join("|");
+  const flipRisk = Math.max(0, Math.min(100, Math.round(
+    (plan.warning ? 26 : 16)
+    + warningSignals * 9
+    + (pressure > 0.75 ? 22 : pressure > 0.4 ? 12 : 4)
+    + (spreadPct > 0.02 ? 18 : spreadPct > 0.01 ? 10 : 2)
+    + (treasuryRatio < 0.25 ? 12 : 0)
+    + (riskyCount > watchedCount ? 8 : 0)
+    + (lastPlan && lastPlan.move !== plan.move ? 10 : 0)
+    + (negativeFeedback > positiveFeedback ? 6 : positiveFeedback > negativeFeedback ? -4 : 0)
+    - Math.min(18, Math.max(0, confidence - 70))
+  )));
+  const nextTurn = flipRisk >= 70
+    ? "Likely to flip"
+    : flipRisk >= 40
+      ? "Could narrow or flip"
+      : "Likely to stay steady";
+  const watchpoint = !status.chainValid
+    ? "Ledger health"
+    : pressure > 0.75
+      ? "Fee pressure"
+      : spreadPct > 0.02
+        ? "Order-book spread"
+        : momentum.delta > 2
+          ? "Momentum follow-through"
+          : momentum.delta < -2
+            ? "Momentum weakness"
+            : treasuryRatio < 0.25
+              ? "Treasury buffer"
+              : riskyCount
+                ? "Counterparty risk"
+                : signalCount
+                  ? "Signal mix"
+                  : "Balanced baseline";
+  panel.classList.toggle("warning", plan.warning);
+  note.textContent = plan.note;
+  goalNode.textContent = plan.goal;
+  goalNote.textContent = plan.goalNote;
+  moveNode.textContent = plan.move;
+  moveNote.textContent = plan.moveNote;
+  confidenceNode.textContent = `${confidence}%`;
+  confidenceNote.textContent = confidence >= 80
+    ? "High confidence from aligned local evidence."
+    : confidence >= 60
+      ? "Moderate confidence with a few local caveats."
+      : "Low confidence; treat the plan as provisional.";
+  if (feedbackPanel && learningNode && learningNote && helpfulNode && helpfulNote && unhelpfulNode && unhelpfulNote) {
+    const feedbackMood = feedbackTotal
+      ? feedbackBalance > 20
+        ? "The copilot is learning a stronger positive bias from your feedback."
+        : feedbackBalance < -20
+          ? "The copilot is learning that this wallet needs a sharper, more conservative bias."
+          : "The copilot is learning a balanced preference from mixed feedback."
+      : "The copilot is waiting for feedback so it can start learning your style.";
+    learningNode.textContent = `${feedbackTotal} feedback event${feedbackTotal === 1 ? "" : "s"} recorded`;
+    learningNote.textContent = feedbackTotal
+      ? `${feedbackMood} Latest feedback applies ${dataCopilotFeedback.lastSignature === signature ? "to this recommendation." : "to an earlier recommendation."}`
+      : "Mark recommendations as helpful or not helpful to bias future guidance.";
+    helpfulNode.textContent = `${helpful + accepted}`;
+    helpfulNote.textContent = feedbackTotal
+      ? `${Math.round((positiveFeedback / feedbackTotal) * 100)}% positive feedback · learned bias ${feedbackBias >= 0 ? "+" : ""}${feedbackBias}.`
+      : "Helpful signals will build a stronger positive prior.";
+    unhelpfulNode.textContent = `${notHelpful + dismissed}`;
+    unhelpfulNote.textContent = feedbackTotal
+      ? `${Math.round((negativeFeedback / feedbackTotal) * 100)}% negative feedback · learned confidence ${learnedConfidence}%.`
+      : "Unhelpful signals will make the Copilot more cautious.";
+    feedbackPanel.classList.toggle("warning", negativeFeedback > positiveFeedback);
+  }
+  const previous = dataCopilotJournal[0];
+  const shiftValue = previous ? confidence - Number(previous.confidence || confidence) : 0;
+  shiftNode.textContent = previous ? `${shiftValue >= 0 ? "+" : ""}${shiftValue}%` : "NEW";
+  shiftNote.textContent = previous
+    ? previous.goal === plan.goal && previous.move === plan.move
+      ? "The plan is consistent, but the supporting evidence was refreshed."
+      : `${previous.goal.toLowerCase()} → ${plan.goal.toLowerCase()} or ${previous.move.toLowerCase()} → ${plan.move.toLowerCase()}.`
+    : "This is the first recorded recommendation for this wallet session.";
+  driverNode.textContent = plan.goal;
+  driverNote.textContent = plan.warning
+    ? "The plan is being driven by risk containment."
+    : healthScore >= 85
+      ? "Healthy protocol conditions support a steady posture."
+      : "The app is balancing mixed evidence before recommending a move.";
+  nextTurnNode.textContent = nextTurn;
+  nextTurnNote.textContent = nextTurn === "Likely to flip"
+    ? "New evidence is likely to change the recommendation soon."
+    : nextTurn === "Could narrow or flip"
+      ? "The current plan is stable, but one or two signals could change it."
+      : "The recommendation should remain stable unless a major signal changes.";
+  flipRiskNode.textContent = `${flipRisk}%`;
+  flipRiskNote.textContent = flipRisk >= 70
+    ? "The next refresh is likely to produce a different posture."
+    : flipRisk >= 40
+      ? "There is some chance of a recommendation change."
+      : "The current plan looks durable.";
+  watchpointNode.textContent = watchpoint;
+  watchpointNote.textContent = !status.chainValid
+    ? "If chain health changes, the entire recommendation should be re-evaluated."
+    : pressure > 0.75
+      ? "Fee pressure is the fastest lever to move the plan."
+      : spreadPct > 0.02
+        ? "A narrowing spread would shift execution advice."
+        : momentum.delta > 2 || momentum.delta < -2
+          ? "A momentum reversal would likely change the recommendation."
+          : treasuryRatio < 0.25
+            ? "Treasury replenishment would improve the operating posture."
+            : riskyCount
+              ? "A counterparty classification change would matter most."
+              : "A larger local signal sample would refine the forecast.";
+  whyNode.textContent = plan.why;
+  stepsNode.innerHTML = plan.steps.map((step) => `
+    <li data-copilot-target="${escapeHtml(step.target)}">${escapeHtml(step.label)}</li>
+  `).join("");
+  if (signature !== dataCopilotSignature) {
+    const change = previous
+      ? (previous.goal !== plan.goal
+        ? `Goal shifted from ${previous.goal.toLowerCase()} to ${plan.goal.toLowerCase()}.`
+        : previous.move !== plan.move
+          ? `The move changed from ${previous.move.toLowerCase()} to ${plan.move.toLowerCase()}.`
+          : "The recommendation stayed consistent, but the live evidence still refreshed."
+      )
+      : "This is the first recorded plan for the current wallet session.";
+    dataCopilotJournal = [{
+      timestamp: Date.now(),
+      goal: plan.goal,
+      move: plan.move,
+      warning: plan.warning,
+      confidence: learnedConfidence,
+      summary: `${plan.goal} → ${plan.move}`,
+      change,
+      why: plan.note,
+      driver: plan.goal,
+      target: plan.steps[0]?.target || "data-timeline-panel",
+    }, ...dataCopilotJournal].slice(0, 6);
+    dataCopilotSignature = signature;
+    saveDataCopilot();
+  }
+  journalStatus.textContent = dataCopilotJournal.length ? `Last update ${relativeTime(dataCopilotJournal[0].timestamp)}` : "No decision history yet.";
+  journalLead.textContent = dataCopilotJournal.length
+    ? `The copilot has learned from ${dataCopilotJournal.length} recorded state change${dataCopilotJournal.length === 1 ? "" : "s"}.`
+    : "The journal will fill as live state changes trigger new recommendations.";
+  journalList.innerHTML = dataCopilotJournal.length ? dataCopilotJournal.map((entry) => `
+    <article class="data-copilot-entry ${entry.warning ? "warning" : "good"}">
+      <span>${escapeHtml(relativeTime(entry.timestamp))}</span>
+      <div>
+        <b>${escapeHtml(entry.summary)}</b>
+        <p>${escapeHtml(entry.change)}</p>
+        <small>${escapeHtml(`${entry.driver || entry.goal} · ${entry.confidence ?? learnedConfidence}% confidence`)}</small>
+      </div>
+      <button type="button" data-copilot-target="${escapeHtml(entry.target)}">REVISIT</button>
+    </article>
+  `).join("") : '<p class="empty">No recommendation changes have been recorded yet.</p>';
+  journalPanel.classList.toggle("warning", dataCopilotJournal.some((entry) => entry.warning));
+}
+
+function renderDataAgentPlaybook(market, status, blocks, priceValues, context = {}) {
+  const panel = $("#data-agent-panel");
+  const note = $("#data-agent-note");
+  const modeNode = $("#data-agent-mode");
+  const modeNote = $("#data-agent-mode-note");
+  const depthNode = $("#data-agent-depth");
+  const depthNote = $("#data-agent-depth-note");
+  const riskNode = $("#data-agent-risk");
+  const riskNote = $("#data-agent-risk-note");
+  const resultNode = $("#data-agent-result");
+  const resultNote = $("#data-agent-result-note");
+  const blockersNode = $("#data-agent-blockers");
+  const blockersNote = $("#data-agent-blockers-note");
+  const autonomyNode = $("#data-agent-autonomy");
+  const autonomyNote = $("#data-agent-autonomy-note");
+  const checkpointNode = $("#data-agent-checkpoint");
+  const checkpointNote = $("#data-agent-checkpoint-note");
+  const objectiveNode = $("#data-agent-objective");
+  const list = $("#data-agent-playbook");
+  if (!panel || !note || !modeNode || !modeNote || !depthNode || !depthNote || !riskNode || !riskNote || !resultNode || !resultNote || !blockersNode || !blockersNote || !autonomyNode || !autonomyNote || !checkpointNode || !checkpointNote || !list) return;
+
+  const objective = ["safety", "execution", "liquidity", "growth"].includes(dataAgentObjective) ? dataAgentObjective : "safety";
+  if (objectiveNode) objectiveNode.value = objective;
+  const objectiveLabels = {
+    safety: "SAFETY",
+    execution: "EXECUTION",
+    liquidity: "LIQUIDITY",
+    growth: "GROWTH",
+  };
+  const momentum = context.momentum || summarizeMomentum(priceValues);
+  const regime = context.regime || analyzeMarketRegime(market, status, priceValues);
+  const pressure = Number(context.pressure ?? feeQuote.pressure ?? 0);
+  const healthScore = Number(context.healthScore ?? computeSystemHealth(status, market, blocks));
+  const price = Number(market.priceUsd || 0);
+  const spreadUsd = Number(market.spreadMicroUsd || 0) / 1_000_000;
+  const spreadPct = price > 0 ? spreadUsd / price : 0;
+  const treasuryRatio = Number(market.treasuryBalance || 0) / Math.max(Number(status.maxSupply || 0), 1);
+  const warningSignals = dataSignalFeed.filter((item) => item.severity === "warning" || item.severity === "critical");
+  const riskyPeers = walletCounterpartyInsights.filter((item) => item.posture === "risky");
+  const watchedPeers = walletCounterpartyInsights.filter((item) => item.isWatched);
+  const branches = portfolioEntries.length ? portfolioEntries : [];
+  const childBranches = branches.filter((entry) => entry.wallet.parentAddress);
+  const totalHoldings = branches.reduce((sum, entry) => sum + Math.max(0, Number(entry.holdings || 0)), 0);
+  const availableHoldings = branches.reduce((sum, entry) => sum + Math.max(0, Number(entry.availableBalance || 0)), 0);
+  const liquidShare = totalHoldings ? availableHoldings / totalHoldings : 1;
+  const feedbackTotal = Math.max(0, Number(dataCopilotFeedback.helpful) || 0)
+    + Math.max(0, Number(dataCopilotFeedback.notHelpful) || 0)
+    + Math.max(0, Number(dataCopilotFeedback.accepted) || 0)
+    + Math.max(0, Number(dataCopilotFeedback.dismissed) || 0);
+  const playbook = [];
+  const addTask = (task) => {
+    const category = task.category || "safety";
+    const target = task.target || "data-copilot-panel";
+    const id = `${category}:${target}:${task.title}`.toLowerCase().replace(/[^a-z0-9:]+/g, "-").slice(0, 96);
+    const reviewed = dataAgentMemory.reviewed?.[id] || null;
+    playbook.push({
+      id,
+      tone: task.tone || "good",
+      priority: task.priority || "P2",
+      title: task.title,
+      text: task.text,
+      evidence: task.evidence || [],
+      category,
+      target,
+      label: task.label || "OPEN",
+      reviewedAt: reviewed?.reviewedAt || null,
+      reviewCount: Math.max(0, Number(reviewed?.count) || 0),
+      confidence: Math.max(40, Math.min(99, Math.round(task.confidence || healthScore))),
+    });
+  };
+
+  if (!status.chainValid) {
+    addTask({
+      tone: "warning",
+      priority: "P0",
+      title: "Pause execution and verify ledger health",
+      text: "The agent should treat balances, market state, and routing advice as provisional until chain integrity is restored.",
+      evidence: ["chain invalid", `${blocks.length} blocks loaded`, `health ${healthScore}/100`],
+      category: "safety",
+      target: "security-center",
+      label: "OPEN SECURITY",
+      confidence: 96,
+    });
+  }
+  if (pressure > 0.72) {
+    addTask({
+      tone: "warning",
+      priority: "P1",
+      title: "Constrain urgent sends",
+      text: "Queue pressure is high enough that the agent should favor smaller transfers, better fee context, and delayed non-urgent sends.",
+      evidence: [`pressure ${Math.round(pressure * 100)}%`, `capacity ${status.metrics?.blockCapacity || "-"} tx`, "fee sensitive"],
+      category: "execution",
+      target: "portfolio-panel",
+      label: "OPEN WALLET",
+      confidence: 86,
+    });
+  }
+  if (spreadPct > 0.015) {
+    addTask({
+      tone: "warning",
+      priority: "P1",
+      title: "Use passive market execution",
+      text: "The book is wide enough that the agent should prefer limit orders and avoid crossing the spread unless speed matters.",
+      evidence: [`spread ${(spreadPct * 100).toFixed(2)}%`, `spot ${price.toFixed(6)}`, `${market.openOrders || 0} orders`],
+      category: "execution",
+      target: "orderbook-panel",
+      label: "REVIEW BOOK",
+      confidence: 80,
+    });
+  }
+  if (warningSignals.length) {
+    addTask({
+      tone: "warning",
+      priority: "P1",
+      title: "Review active signal warnings",
+      text: "The signal feed has warnings that may change the current plan, so the agent should inspect the newest evidence before taking size.",
+      evidence: [`${warningSignals.length} warnings`, `${dataSignalFeed.length} signals`, dataSignalConfig.sensitivity],
+      category: "safety",
+      target: "data-signal-panel",
+      label: "OPEN SIGNALS",
+      confidence: 78,
+    });
+  }
+  if (childBranches.length && liquidShare < 0.45) {
+    addTask({
+      tone: "warning",
+      priority: "P2",
+      title: "Rebalance subwallet liquidity",
+      text: "Holdings are distributed across branches, but the immediately usable balance is thin enough to justify a branch-level check.",
+      evidence: [`${childBranches.length} subwallets`, `${(liquidShare * 100).toFixed(1)}% liquid`, `${format(availableHoldings)} EC available`],
+      category: "liquidity",
+      target: "subwallet-panel",
+      label: "OPEN SUBWALLETS",
+      confidence: 74,
+    });
+  }
+  if (riskyPeers.length || watchedPeers.length > 2) {
+    addTask({
+      tone: riskyPeers.length ? "warning" : "good",
+      priority: riskyPeers.length ? "P1" : "P2",
+      title: "Refresh counterparty posture",
+      text: "The relationship graph has enough watchlist context that the agent should check counterparties before sensitive sends.",
+      evidence: [`${riskyPeers.length} risky`, `${watchedPeers.length} watched`, "local graph"],
+      category: "safety",
+      target: riskyPeers.length ? "counterparty-panel" : "watchlist-panel",
+      label: "OPEN GRAPH",
+      confidence: riskyPeers.length ? 84 : 68,
+    });
+  }
+  if (treasuryRatio < 0.28) {
+    addTask({
+      tone: "warning",
+      priority: "P2",
+      title: "Protect treasury runway",
+      text: "Treasury supply is low enough that the agent should prefer staged purchases and avoid sudden drain from market buys.",
+      evidence: [`${(treasuryRatio * 100).toFixed(1)}% treasury`, `${format(market.treasuryBalance)} EC`, "finite supply"],
+      category: "liquidity",
+      target: "data-forecast-panel",
+      label: "OPEN FORECAST",
+      confidence: 76,
+    });
+  }
+  if (objective === "growth" && momentum.delta > 0 && spreadPct <= 0.025 && status.chainValid) {
+    addTask({
+      tone: "good",
+      priority: "P2",
+      title: "Evaluate staged growth entry",
+      text: "The objective favors upside capture, so the agent should inspect the book for staged entry conditions before any buy.",
+      evidence: [momentum.label.toLowerCase(), regime.label.toLowerCase(), `spread ${(spreadPct * 100).toFixed(2)}%`],
+      category: "growth",
+      target: "orderbook-panel",
+      label: "OPEN MARKET",
+      confidence: 72,
+    });
+  }
+  if (objective === "liquidity" && childBranches.length && liquidShare < 0.75) {
+    addTask({
+      tone: liquidShare < 0.45 ? "warning" : "good",
+      priority: liquidShare < 0.45 ? "P2" : "P3",
+      title: "Map branch liquidity",
+      text: "The objective favors usable balance, so the agent should compare branch reserves before the next send.",
+      evidence: [`${(liquidShare * 100).toFixed(1)}% liquid`, `${childBranches.length} subwallets`, `${format(totalHoldings)} EC total`],
+      category: "liquidity",
+      target: "subwallet-panel",
+      label: "OPEN SUBWALLETS",
+      confidence: 70,
+    });
+  }
+  if (objective === "execution" && pressure <= 0.72 && spreadPct <= 0.025) {
+    addTask({
+      tone: "good",
+      priority: "P3",
+      title: "Prepare clean execution route",
+      text: "The objective favors transaction quality, so the agent should keep the order book and fee posture ready for the next action.",
+      evidence: [`pressure ${Math.round(pressure * 100)}%`, `spread ${(spreadPct * 100).toFixed(2)}%`, `${market.openOrders || 0} orders`],
+      category: "execution",
+      target: "orderbook-panel",
+      label: "OPEN BOOK",
+      confidence: 68,
+    });
+  }
+  if (!playbook.length) {
+    addTask({
+      tone: "good",
+      priority: "P3",
+      title: "Maintain watch mode",
+      text: "No urgent risk is dominating, so the agent can keep watching market structure and wait for a cleaner trigger.",
+      evidence: [regime.label.toLowerCase(), momentum.label.toLowerCase(), `health ${healthScore}/100`],
+      category: objective,
+      target: "data-timeline-panel",
+      label: "OPEN TIMELINE",
+      confidence: Math.max(70, healthScore),
+    });
+  }
+
+  const objectiveBoost = {
+    safety: { safety: 10, execution: 0, liquidity: 2, growth: -4 },
+    execution: { execution: 10, liquidity: 2, safety: 4, growth: 1 },
+    liquidity: { liquidity: 10, safety: 4, execution: 2, growth: 0 },
+    growth: { growth: 10, execution: 4, liquidity: 1, safety: 2 },
+  }[objective];
+  const priorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  const scoreTask = (item) => {
+    const reviewedAge = item.reviewedAt ? Date.now() - item.reviewedAt : Infinity;
+    const recentlyReviewedPenalty = reviewedAge < 30 * 60_000 ? 12 : reviewedAge < 2 * 60 * 60_000 ? 5 : 0;
+    return (100 - (priorityRank[item.priority] ?? 4) * 20) + item.confidence + (objectiveBoost[item.category] || 0) - recentlyReviewedPenalty;
+  };
+  const sorted = playbook.sort((a, b) => {
+    if (a.priority === "P0" || b.priority === "P0") return (priorityRank[a.priority] ?? 4) - (priorityRank[b.priority] ?? 4);
+    return scoreTask(b) - scoreTask(a);
+  }).slice(0, 5);
+  const riskLocked = sorted.some((item) => item.priority === "P0" || (item.tone === "warning" && item.priority === "P1"));
+  const protectiveTasks = sorted.filter((item) => item.tone === "warning").length;
+  const reviewedTasks = sorted.filter((item) => item.reviewedAt && Date.now() - item.reviewedAt < 2 * 60 * 60_000).length;
+  const topTask = sorted[0];
+  const rehearsalScore = Math.max(1, Math.min(99, Math.round(
+    (topTask?.confidence || healthScore)
+    - protectiveTasks * 4
+    - (riskLocked ? 10 : 0)
+    + (feedbackTotal ? 5 : 0)
+    + (healthScore >= 85 ? 6 : 0)
+  )));
+  const blockerLabels = [];
+  if (!status.chainValid) blockerLabels.push("ledger");
+  if (pressure > 0.72) blockerLabels.push("fees");
+  if (spreadPct > 0.015) blockerLabels.push("spread");
+  if (warningSignals.length) blockerLabels.push("signals");
+  if (riskyPeers.length) blockerLabels.push("counterparty");
+  const checkpointMs = riskLocked ? Math.min(Math.max(0, nextBlockAt - Date.now()), 90_000) : Math.min(Math.max(0, nextBlockAt - Date.now()), 180_000);
+  const mode = riskLocked ? "CAUTIOUS" : healthScore >= 85 && feedbackTotal ? "ADAPTIVE" : "WATCH";
+  panel.classList.toggle("warning", riskLocked);
+  note.textContent = riskLocked
+    ? "The agent queue is prioritizing protective actions before execution."
+    : "The agent queue is ready to route you toward the highest-value next step.";
+  modeNode.textContent = mode;
+  modeNote.textContent = feedbackTotal
+    ? `${objectiveLabels[objective]} objective with ${feedbackTotal} feedback events shaping order.`
+    : `${objectiveLabels[objective]} objective is steering this playbook.`;
+  depthNode.textContent = `${sorted.length} TASK${sorted.length === 1 ? "" : "S"}`;
+  depthNote.textContent = sorted[0] ? `${sorted[0].priority} leads with ${sorted[0].confidence}% confidence; ${reviewedTasks} recently reviewed.` : "No tasks are queued.";
+  riskNode.textContent = riskLocked ? "LOCKED" : "CLEAR";
+  riskNote.textContent = riskLocked ? "Review protective tasks before large actions." : "No protective gate is blocking normal review.";
+  resultNode.textContent = riskLocked ? "RISK REDUCTION" : topTask?.priority === "P3" ? "STEADY STATE" : "READY PATH";
+  resultNote.textContent = riskLocked
+    ? `Rehearsal expects protective actions to reduce the active risk queue with ${rehearsalScore}% confidence.`
+    : `Rehearsal expects the plan to remain usable with ${rehearsalScore}% confidence.`;
+  blockersNode.textContent = blockerLabels.length ? blockerLabels.slice(0, 2).join(" + ").toUpperCase() : "NONE";
+  blockersNote.textContent = blockerLabels.length
+    ? `${blockerLabels.length} condition${blockerLabels.length === 1 ? "" : "s"} limit how autonomous the agent should be.`
+    : "No blocker is currently limiting the playbook.";
+  autonomyNode.textContent = riskLocked ? "HUMAN REVIEW" : protectiveTasks ? "ASSISTED" : "MONITOR";
+  autonomyNote.textContent = riskLocked
+    ? "The agent should route and explain, not execute sensitive actions."
+    : protectiveTasks
+      ? "The agent can guide review, but should keep execution user-confirmed."
+      : "The agent can keep observing and refresh when evidence changes.";
+  checkpointNode.textContent = checkpointMs > 0 ? formatDuration(checkpointMs) : "NOW";
+  checkpointNote.textContent = riskLocked
+    ? "Re-run after the next block or after the top warning is reviewed."
+    : "Re-run on the next block, price change, or signal update.";
+  list._playbook = sorted;
+  list._rehearsal = { mode, riskLocked, rehearsalScore, blockers: blockerLabels, checkpointMs };
+  list.innerHTML = sorted.map((item, index) => `
+    <article class="data-agent-item ${item.tone}">
+      <span>${escapeHtml(item.priority)}<br>${escapeHtml(String(item.confidence))}%</span>
+      <div>
+        <b>${escapeHtml(item.title)}</b>
+        <p>${escapeHtml(item.text)}</p>
+        <div class="data-agent-evidence"><i>${escapeHtml(item.category.toUpperCase())}</i>${item.reviewedAt ? `<i>REVIEWED ${escapeHtml(relativeTime(item.reviewedAt)).toUpperCase()}</i>` : "<i>UNREVIEWED</i>"}${item.evidence.slice(0, 2).map((evidence) => `<i>${escapeHtml(evidence)}</i>`).join("")}</div>
+      </div>
+      <button type="button" data-agent-target="${escapeHtml(item.target)}" data-agent-task="${escapeHtml(item.id)}" data-agent-index="${index}">${escapeHtml(item.reviewedAt ? "REVISIT" : item.label)}</button>
+    </article>
+  `).join("");
+}
+
 function renderDataIntelligence(market, status, blocks, priceValues) {
   const healthScore = computeSystemHealth(status, market, blocks);
   const momentum = summarizeMomentum(priceValues);
@@ -3914,9 +4873,13 @@ function renderDataIntelligence(market, status, blocks, priceValues) {
   $("#data-recommendation").textContent = `${regime.note} ${recommendation}`;
   renderDataBrief(market, status, blocks, priceValues);
   renderDataForecast(market, status, priceValues);
+  renderDataLens(market, status, priceValues);
+  renderDataCopilot(market, status, blocks, priceValues);
+  renderDataTimeline(market, status, priceValues);
   renderDataAnomalies(market, status, blocks, priceValues);
   renderDataSignals();
   renderDataActions(market, status, momentum, regime, pressure, healthScore);
+  renderDataAgentPlaybook(market, status, blocks, priceValues, { momentum, regime, pressure, healthScore });
   renderMarketAlerts(market);
 }
 
@@ -4159,6 +5122,82 @@ function deleteStressScenarioTemplate(templateId) {
   renderStressLab();
 }
 
+function describeStressScenario(scenario = stressScenario) {
+  const label = scenario.priceShockPct <= -40
+    ? "SEVERE SELLOFF"
+    : scenario.priceShockPct <= -20
+      ? "DOWNTURN"
+      : scenario.priceShockPct >= 20
+        ? "RALLY"
+        : "BASELINE";
+  return `${label} · ${scenario.horizonDays}d horizon · ${scenario.priceShockPct >= 0 ? "+" : ""}${scenario.priceShockPct}% shock`;
+}
+
+function resolveStressScenarioChoice(choice) {
+  if (!choice || choice === "current") {
+    return { id:"current", name:"Current scenario", scenario: { ...stressScenario } };
+  }
+  const template = stressScenarioTemplates.find((item) => item.id === choice);
+  if (!template) return { id:"current", name:"Current scenario", scenario: { ...stressScenario } };
+  return { id:template.id, name:template.name, scenario: { ...template.scenario } };
+}
+
+function renderStressTemplateCompareOptions() {
+  const left = $("#stress-template-compare-left");
+  const right = $("#stress-template-compare-right");
+  if (!left || !right) return;
+  const previousLeft = left.value || "current";
+  const previousRight = right.value || (stressScenarioTemplates[0]?.id || "current");
+  const options = [
+    { value:"current", label:"CURRENT SCENARIO" },
+    ...stressScenarioTemplates.map((item) => ({ value:item.id, label:item.name })),
+  ];
+  const html = options.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+  left.innerHTML = html;
+  right.innerHTML = html;
+  left.value = options.some((item) => item.value === previousLeft) ? previousLeft : "current";
+  right.value = options.some((item) => item.value === previousRight)
+    ? previousRight
+    : (options.find((item) => item.value !== left.value)?.value || left.value);
+  if (left.value === right.value && options.length > 1) {
+    right.value = options.find((item) => item.value !== left.value)?.value || left.value;
+  }
+}
+
+function renderStressTemplateComparison() {
+  const left = $("#stress-template-compare-left");
+  const right = $("#stress-template-compare-right");
+  if (!left || !right) return;
+  const leftChoice = resolveStressScenarioChoice(left.value);
+  const rightChoice = resolveStressScenarioChoice(right.value);
+  const sameChoice = leftChoice.id === rightChoice.id;
+  const leftResult = buildStressProjectionFromScenario(leftChoice.scenario);
+  const rightResult = buildStressProjectionFromScenario(rightChoice.scenario);
+  const liquidDelta = rightResult.projected - leftResult.projected;
+  const resilienceDelta = rightResult.score - leftResult.score;
+  const runwayDelta = Number.isFinite(rightResult.runwayDays) && Number.isFinite(leftResult.runwayDays)
+    ? rightResult.runwayDays - leftResult.runwayDays
+    : null;
+  const rightWins = !sameChoice && (rightResult.score > leftResult.score
+    || (rightResult.score === leftResult.score && rightResult.projected >= leftResult.projected));
+  const safer = rightWins ? rightChoice : leftChoice;
+  $("#stress-template-compare-note").textContent = sameChoice
+    ? "Pick two distinct scenarios to get a meaningful comparison."
+    : `${leftChoice.name} vs ${rightChoice.name} · compare liquidity, resilience, and runway side by side.`;
+  $("#stress-template-compare-liquid").textContent = `${liquidDelta >= 0 ? "+" : ""}${format(liquidDelta)} EC`;
+  $("#stress-template-compare-liquid-note").textContent = `Baseline ${format(leftResult.projected)} EC → challenger ${format(rightResult.projected)} EC.`;
+  $("#stress-template-compare-score").textContent = `${resilienceDelta >= 0 ? "+" : ""}${resilienceDelta}/100`;
+  $("#stress-template-compare-score-note").textContent = `Baseline ${leftResult.score}/100 → challenger ${rightResult.score}/100.`;
+  $("#stress-template-compare-runway").textContent = Number.isFinite(runwayDelta) ? `${runwayDelta >= 0 ? "+" : ""}${Math.floor(runwayDelta)} days` : "—";
+  $("#stress-template-compare-runway-note").textContent = Number.isFinite(runwayDelta)
+    ? `Baseline ${Math.floor(leftResult.runwayDays)} days vs challenger ${Math.floor(rightResult.runwayDays)} days.`
+    : "Runway comparison unavailable for one or both scenarios.";
+  $("#stress-template-compare-verdict").textContent = sameChoice ? "IDENTICAL" : rightWins ? "CHALLENGER WINS" : "BASELINE WINS";
+  $("#stress-template-compare-verdict-note").textContent = sameChoice
+    ? "Both selectors point at the same scenario, so there is no delta to rank."
+    : `${safer.name} currently looks safer for the selected tradeoff.`;
+}
+
 function renderStressLab() {
   if (!$("#stress-chart") || !wallet || !marketData) return;
   $("#stress-horizon").value = String(stressScenario.horizonDays);
@@ -4180,13 +5219,10 @@ function renderStressLab() {
   $("#stress-runway").textContent = Number.isFinite(result.runwayDays) ? `${Math.floor(result.runwayDays)} day runway` : "No modeled burn";
   $("#stress-score").textContent = `${result.score}/100`;
   $("#stress-grade").textContent = `${grade} · ${stressScenario.priceShockPct >= 0 ? "+" : ""}${stressScenario.priceShockPct}% price case`;
-  const scenarioName = stressScenario.priceShockPct <= -40
-    ? "SEVERE SELLOFF"
-    : stressScenario.priceShockPct <= -20
-      ? "DOWNTURN"
-      : stressScenario.priceShockPct >= 20
-        ? "RALLY"
-        : "BASELINE";
+  $("#stress-template-note").textContent = `${stressScenarioTemplates.length} saved template${stressScenarioTemplates.length === 1 ? "" : "s"} available for this wallet.`;
+  renderStressTemplateCompareOptions();
+  renderStressTemplateComparison();
+  const scenarioName = describeStressScenario(stressScenario).split(" · ")[0];
   const response = result.score >= 85
     ? "Maintain discipline and keep the reserve floor intact."
     : result.score >= 65
@@ -4213,11 +5249,10 @@ function renderStressLab() {
     : "Runway comparison unavailable for this scenario.";
   if (templateList) {
     templateList.innerHTML = stressScenarioTemplates.length ? stressScenarioTemplates.map((item) => {
-      const scenarioLabel = item.scenario.priceShockPct <= -40 ? "SEVERE SELLOFF" : item.scenario.priceShockPct <= -20 ? "DOWNTURN" : item.scenario.priceShockPct >= 20 ? "RALLY" : "BASELINE";
       return `<article class="stress-template-item">
         <div>
           <b>${escapeHtml(item.name)}</b>
-          <p>${escapeHtml(`${scenarioLabel} · ${item.scenario.horizonDays}d horizon · ${item.scenario.priceShockPct >= 0 ? "+" : ""}${item.scenario.priceShockPct}% shock`)}</p>
+          <p>${escapeHtml(describeStressScenario(item.scenario))}</p>
           <small>${escapeHtml(item.scenario.includeHistory ? "Includes recent spending pace." : "Excludes recent spending pace.")} · ${escapeHtml(String(item.uses || 0))} uses</small>
         </div>
         <div class="stress-template-actions">
@@ -4397,6 +5432,10 @@ async function activateWallet(address) {
   await saveWallets();
   loadLearnProgress();
   loadDataSignals();
+  loadDataCopilot();
+  loadDataCopilotFeedback();
+  loadDataAgentObjective();
+  loadDataAgentMemory();
   loadStressScenarioTemplates();
   loadSecurityJournal();
   loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); loadActivityRules(); loadStressScenario();
@@ -4979,6 +6018,112 @@ $("#data-signal-feed").addEventListener("click", (event) => {
   document.querySelector(`[data-view="${view}"]`)?.click();
   requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
 });
+$("#data-signal-autotune")?.addEventListener("click", () => {
+  autoTuneDataSignalConfig();
+  toast("Signal control auto-tuned");
+});
+$("#data-copilot-refresh")?.addEventListener("click", () => {
+  const priceValues = marketData ? (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }]).map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000) : [];
+  renderDataCopilot(marketData, currentStatus, loadedBlocks, priceValues);
+  toast("Copilot refreshed");
+});
+$("#data-copilot-mark-helpful")?.addEventListener("click", () => {
+  dataCopilotFeedback.helpful = Math.max(0, Number(dataCopilotFeedback.helpful) || 0) + 1;
+  dataCopilotFeedback.accepted = Math.max(0, Number(dataCopilotFeedback.accepted) || 0) + 1;
+  dataCopilotFeedback.lastAction = "helpful";
+  dataCopilotFeedback.lastSignature = dataCopilotSignature || null;
+  saveDataCopilotFeedback();
+  const priceValues = marketData ? (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }]).map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000) : [];
+  renderDataCopilot(marketData, currentStatus, loadedBlocks, priceValues);
+  toast("Copilot feedback saved");
+});
+$("#data-copilot-mark-unhelpful")?.addEventListener("click", () => {
+  dataCopilotFeedback.notHelpful = Math.max(0, Number(dataCopilotFeedback.notHelpful) || 0) + 1;
+  dataCopilotFeedback.dismissed = Math.max(0, Number(dataCopilotFeedback.dismissed) || 0) + 1;
+  dataCopilotFeedback.lastAction = "unhelpful";
+  dataCopilotFeedback.lastSignature = dataCopilotSignature || null;
+  saveDataCopilotFeedback();
+  const priceValues = marketData ? (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }]).map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000) : [];
+  renderDataCopilot(marketData, currentStatus, loadedBlocks, priceValues);
+  toast("Copilot feedback saved");
+});
+$("#data-copilot-steps")?.addEventListener("click", (event) => {
+  const item = event.target.closest("[data-copilot-target]");
+  if (!item) return;
+  const target = document.getElementById(item.dataset.copilotTarget || "");
+  if (!target) return;
+  const view = target.closest(".data-view") ? "data" : "wallet";
+  document.querySelector(`[data-view="${view}"]`)?.click();
+  requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
+});
+$("#data-copilot-journal-list")?.addEventListener("click", (event) => {
+  const item = event.target.closest("[data-copilot-target]");
+  if (!item) return;
+  const target = document.getElementById(item.dataset.copilotTarget || "");
+  if (!target) return;
+  const view = target.closest(".data-view") ? "data" : "wallet";
+  document.querySelector(`[data-view="${view}"]`)?.click();
+  requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
+});
+$("#data-agent-rehearse")?.addEventListener("click", () => {
+  if (!marketData || !currentStatus) return toast("Live data is still loading", true);
+  const priceValues = (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }])
+    .map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000);
+  const momentum = summarizeMomentum(priceValues);
+  const regime = analyzeMarketRegime(marketData, currentStatus, priceValues);
+  const healthScore = computeSystemHealth(currentStatus, marketData, loadedBlocks);
+  renderDataAgentPlaybook(marketData, currentStatus, loadedBlocks, priceValues, {
+    momentum,
+    regime,
+    pressure: Number(feeQuote.pressure || 0),
+    healthScore,
+  });
+  const rehearsal = $("#data-agent-playbook")?._rehearsal;
+  toast(rehearsal ? `Agent rehearsal: ${rehearsal.rehearsalScore}% confidence` : "Agent rehearsal refreshed");
+});
+$("#data-agent-objective")?.addEventListener("change", (event) => {
+  dataAgentObjective = ["safety", "execution", "liquidity", "growth"].includes(event.target.value) ? event.target.value : "safety";
+  saveDataAgentObjective();
+  const priceValues = marketData ? (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }]).map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000) : [];
+  if (marketData && currentStatus) renderDataIntelligence(marketData, currentStatus, loadedBlocks, priceValues);
+  toast(`Agent objective set to ${dataAgentObjective.toUpperCase()}`);
+});
+$("#data-agent-playbook")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-agent-target]");
+  if (!button) return;
+  const playbook = $("#data-agent-playbook")?._playbook || [];
+  const task = playbook[Number(button.dataset.agentIndex)] || playbook.find((item) => item.id === button.dataset.agentTask);
+  if (task?.id) {
+    const existing = dataAgentMemory.reviewed?.[task.id] || {};
+    dataAgentMemory.reviewed = {
+      ...(dataAgentMemory.reviewed || {}),
+      [task.id]: {
+        reviewedAt: Date.now(),
+        count: Math.max(0, Number(existing.count) || 0) + 1,
+        title: task.title,
+      },
+    };
+    dataAgentMemory.opened = Math.max(0, Number(dataAgentMemory.opened) || 0) + 1;
+    dataAgentMemory.lastOpenedAt = Date.now();
+    dataAgentMemory.lastTaskId = task.id;
+    saveDataAgentMemory();
+    if (marketData && currentStatus) {
+      const priceValues = (marketData.history?.length ? marketData.history : [{ priceMicroUsd: marketData.priceMicroUsd || 0 }]).map((entry) => Number(entry.priceMicroUsd || 0) / 1_000_000);
+      renderDataAgentPlaybook(marketData, currentStatus, loadedBlocks, priceValues, {
+        momentum: summarizeMomentum(priceValues),
+        regime: analyzeMarketRegime(marketData, currentStatus, priceValues),
+        pressure: Number(feeQuote.pressure || 0),
+        healthScore: computeSystemHealth(currentStatus, marketData, loadedBlocks),
+      });
+    }
+  }
+  const target = document.getElementById(button.dataset.agentTarget || "");
+  if (!target) return;
+  const view = target.closest(".data-view") ? "data" : "wallet";
+  document.querySelector(`[data-view="${view}"]`)?.click();
+  requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
+  if (task?.title) toast(`Agent task reviewed: ${task.title}`);
+});
 $("#data-anomaly-list").addEventListener("click", (event) => {
   const button = event.target.closest("[data-data-anomaly-target]");
   if (!button) return;
@@ -5173,6 +6318,30 @@ $("#stress-lab-panel")?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-stress-preset]");
   if (!button) return;
   applyStressPreset(button.dataset.stressPreset || "");
+});
+$("#stress-lab-panel")?.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) return;
+  if (target.id !== "stress-template-compare-left" && target.id !== "stress-template-compare-right") return;
+  const left = $("#stress-template-compare-left");
+  const right = $("#stress-template-compare-right");
+  if (left && right && left.value === right.value) {
+    const fallback = [...left.options].find((option) => option.value !== left.value);
+    if (fallback) {
+      if (target.id === "stress-template-compare-left") right.value = fallback.value;
+      else left.value = fallback.value;
+    }
+  }
+  renderStressTemplateComparison();
+});
+$("#stress-template-compare-swap")?.addEventListener("click", () => {
+  const left = $("#stress-template-compare-left");
+  const right = $("#stress-template-compare-right");
+  if (!left || !right) return;
+  const currentLeft = left.value;
+  left.value = right.value;
+  right.value = currentLeft;
+  renderStressTemplateComparison();
 });
 $("#stress-template-save")?.addEventListener("click", () => {
   try {
@@ -5377,7 +6546,7 @@ async function offlineIntentFingerprint(tx) {
 
 function buildRecoveryBundle() {
   return {
-    version: 3,
+    version: 4,
     exportedAt: Date.now(),
     wallet,
     walletHistory,
@@ -5390,6 +6559,18 @@ function buildRecoveryBundle() {
     spendJournal,
     securityJournal,
     stressScenario,
+    stressScenarioTemplates,
+    dataSignalConfig,
+    dataSignalFeed,
+    dataCopilot: {
+      signature: dataCopilotSignature,
+      journal: dataCopilotJournal,
+    },
+    dataCopilotFeedback: {
+      ...dataCopilotFeedback,
+    },
+    dataAgentObjective,
+    dataAgentMemory,
   };
 }
 function restoreRecoveryBundle(bundle) {
@@ -5436,8 +6617,60 @@ async function importRecoveryData(imported) {
         includeHistory:imported.stressScenario.includeHistory !== false,
       };
     }
-    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); savePaymentRequests(); saveWalletHistory(); saveTransactionGuard(); saveSpendJournal(); saveStressScenario(); saveStressScenarioTemplates(); saveDataSignals(); saveSecurityJournal();
-    portfolioUpdatedAt=0; renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderWalletHistory(); renderWalletDiagnostics(); renderTransactionGuardSettings(); loadActivityRules(); loadStressScenario(); loadStressScenarioTemplates(); loadDataSignals(); renderSecurityCenter(); showWallet(); recordSecurityEvent("backup_imported", "Recovery imported", "An encrypted recovery bundle was opened and verified locally.", "good"); await refresh(); toast("Wallet imported");
+    if (Array.isArray(imported.stressScenarioTemplates)) {
+      stressScenarioTemplates = imported.stressScenarioTemplates
+        .filter((item) => item && typeof item.name === "string")
+        .slice(0, 12)
+        .map((item) => ({
+          id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+          name: item.name,
+          scenario: {
+            horizonDays: [7,30,90,180].includes(Number(item.scenario?.horizonDays)) ? Number(item.scenario.horizonDays) : 30,
+            priceShockPct:Number.isFinite(Number(item.scenario?.priceShockPct)) ? Math.max(-95, Math.min(300, Number(item.scenario.priceShockPct))) : -35,
+            extraSpendEc:Math.max(0, Number(item.scenario?.extraSpendEc) || 0),
+            includeHistory:item.scenario?.includeHistory !== false,
+          },
+          createdAt:Number(item.createdAt) || Date.now(),
+          uses:Number(item.uses) || 0,
+        }));
+    }
+    if (imported.dataSignalConfig && typeof imported.dataSignalConfig === "object") {
+      dataSignalConfig = {
+        sensitivity: ["broad", "balanced", "tight"].includes(imported.dataSignalConfig.sensitivity) ? imported.dataSignalConfig.sensitivity : "balanced",
+        forecastHorizon: [6, 12, 24].includes(Number(imported.dataSignalConfig.forecastHorizon)) ? Number(imported.dataSignalConfig.forecastHorizon) : 12,
+        feedLimit: [5, 8, 12].includes(Number(imported.dataSignalConfig.feedLimit)) ? Number(imported.dataSignalConfig.feedLimit) : 8,
+      };
+    }
+    if (Array.isArray(imported.dataSignalFeed)) {
+      dataSignalFeed = imported.dataSignalFeed.filter((item) => item && typeof item.label === "string").slice(0, dataSignalConfig.feedLimit);
+    }
+    if (imported.dataCopilot && typeof imported.dataCopilot === "object") {
+      dataCopilotSignature = typeof imported.dataCopilot.signature === "string" ? imported.dataCopilot.signature : "";
+      dataCopilotJournal = Array.isArray(imported.dataCopilot.journal)
+        ? imported.dataCopilot.journal.filter((item) => item && typeof item.goal === "string" && typeof item.move === "string").slice(0, 6)
+        : [];
+    }
+    if (imported.dataCopilotFeedback && typeof imported.dataCopilotFeedback === "object") {
+      dataCopilotFeedback = {
+        helpful: Math.max(0, Number(imported.dataCopilotFeedback.helpful) || 0),
+        notHelpful: Math.max(0, Number(imported.dataCopilotFeedback.notHelpful) || 0),
+        accepted: Math.max(0, Number(imported.dataCopilotFeedback.accepted) || 0),
+        dismissed: Math.max(0, Number(imported.dataCopilotFeedback.dismissed) || 0),
+        lastAction: typeof imported.dataCopilotFeedback.lastAction === "string" ? imported.dataCopilotFeedback.lastAction : null,
+        lastSignature: typeof imported.dataCopilotFeedback.lastSignature === "string" ? imported.dataCopilotFeedback.lastSignature : null,
+      };
+    }
+    if (["safety", "execution", "liquidity", "growth"].includes(imported.dataAgentObjective)) dataAgentObjective = imported.dataAgentObjective;
+    if (imported.dataAgentMemory && typeof imported.dataAgentMemory === "object") {
+      dataAgentMemory = {
+        reviewed: imported.dataAgentMemory.reviewed && typeof imported.dataAgentMemory.reviewed === "object" ? imported.dataAgentMemory.reviewed : {},
+        opened: Math.max(0, Number(imported.dataAgentMemory.opened) || 0),
+        lastOpenedAt: Number.isFinite(Number(imported.dataAgentMemory.lastOpenedAt)) ? Number(imported.dataAgentMemory.lastOpenedAt) : null,
+        lastTaskId: typeof imported.dataAgentMemory.lastTaskId === "string" ? imported.dataAgentMemory.lastTaskId : null,
+      };
+    }
+    await saveWallets(); localStorage.setItem(contactsKey,JSON.stringify(contacts)); saveRecentTransfers(); saveTransferTemplates(); savePaymentPlans(); savePaymentRequests(); saveWalletHistory(); saveTransactionGuard(); saveSpendJournal(); saveStressScenario(); saveStressScenarioTemplates(); saveDataSignals(); saveDataCopilot(); saveDataCopilotFeedback(); saveDataAgentObjective(); saveDataAgentMemory(); saveSecurityJournal();
+    portfolioUpdatedAt=0; renderContacts(); renderRecentTransfers(); renderTransferTemplates(); renderPaymentPlans(); renderPaymentRequests(); renderWalletHistory(); renderWalletDiagnostics(); renderTransactionGuardSettings(); loadActivityRules(); loadStressScenario(); loadStressScenarioTemplates(); loadDataSignals(); loadDataCopilot(); loadDataCopilotFeedback(); loadDataAgentObjective(); loadDataAgentMemory(); renderSecurityCenter(); showWallet(); recordSecurityEvent("backup_imported", "Recovery imported", "An encrypted recovery bundle was opened and verified locally.", "good"); await refresh(); toast("Wallet imported");
 }
 
 function openRecoveryDialog(mode) {
@@ -6271,5 +7504,5 @@ renderQuiz();
 loadLearnProgress();
 renderLearnLab();
 
-try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); loadSessionSecurity(); loadRebalanceConfig(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); loadActivityRules(); loadStressScenario(); loadStressScenarioTemplates(); loadDataSignals(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); renderSessionSecurity(); renderActivityIntelligence(walletActivity); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(checkSessionSecurity,1_000); setInterval(() => refresh().catch(()=>{}), 15_000); }
+try { contacts=(JSON.parse(localStorage.getItem(contactsKey)) || []).filter((contact)=>contact && typeof contact.name==="string" && /^ec1[0-9a-f]{38}$/.test(contact.address)); loadWatchlist(); loadWatchlistSnapshot(); loadMarketAlerts(); loadSessionSecurity(); loadRebalanceConfig(); renderContacts(); await loadWallets(); loadRecentTransfers(); loadTransferTemplates(); loadWalletHistory(); loadPaymentPlans(); loadPaymentRequests(); loadTransactionGuard(); loadActivityRules(); loadStressScenario(); loadStressScenarioTemplates(); loadDataSignals(); loadDataCopilot(); loadDataCopilotFeedback(); loadDataAgentObjective(); loadDataAgentMemory(); await ensureTreasuryWallet(); showWallet(); $("#send-form").reset(); renderWatchlist(currentAccount); renderRecentTransfers(); renderTransferTemplates(); renderWalletHistory(); renderWalletDiagnostics(); renderPaymentPlans(); renderPaymentRequests(); renderTransactionGuardSettings(); renderSessionSecurity(); renderActivityIntelligence(walletActivity); await refresh(); const initialView=["#learn","#data"].includes(location.hash)?location.hash.slice(1):"wallet"; document.querySelector(`[data-view="${initialView}"]`).click(); connectEventStream(); setInterval(updateBlockClock,250); setInterval(checkSessionSecurity,1_000); setInterval(() => refresh().catch(()=>{}), 15_000); }
 catch (error) { $("#address").textContent = "Wallet unavailable"; toast(error.message, true); }

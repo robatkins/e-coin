@@ -116,10 +116,10 @@
         <div class="security-center" id="security-center">
           <div class="section-title compact"><div><p class="eyebrow">SECURITY CENTER</p><h2>Posture and recovery</h2></div><small id="security-grade">ANALYZING</small></div>
           <div class="security-metrics">
-            <div><span>POSTURE</span><b id="security-score">â€”</b><small id="security-summary">Evaluating the wallet.</small></div>
-            <div><span>SESSION</span><b id="security-session-state">â€”</b><small id="security-session-note">Vault and timer status.</small></div>
-            <div><span>LAST BACKUP</span><b id="security-backup-state">â€”</b><small id="security-backup-note">Recovery freshness.</small></div>
-            <div><span>EVENTS</span><b id="security-event-state">â€”</b><small id="security-event-note">Local security log.</small></div>
+            <div><span>POSTURE</span><b id="security-score">—</b><small id="security-summary">Evaluating the wallet.</small></div>
+            <div><span>SESSION</span><b id="security-session-state">—</b><small id="security-session-note">Vault and timer status.</small></div>
+            <div><span>LAST BACKUP</span><b id="security-backup-state">—</b><small id="security-backup-note">Recovery freshness.</small></div>
+            <div><span>EVENTS</span><b id="security-event-state">—</b><small id="security-event-note">Local security log.</small></div>
           </div>
           <div class="security-actions">
             <button class="button ghost" id="security-drill" type="button">RUN RECOVERY DRILL</button>
@@ -335,6 +335,154 @@
           <div id="data-actions" class="data-actions"><p class="empty">Action guidance will appear here.</p></div>
         </div>
       </div>
+      <div class="data-lens" id="data-lens-panel">
+        <div class="data-lens-head">
+          <div>
+            <span>EXECUTION LENS</span>
+            <h2>How the market wants to be traded right now</h2>
+          </div>
+          <small id="data-lens-note">A compact explanation of price, spread, fee, and treasury conditions.</small>
+        </div>
+        <div class="data-lens-grid">
+          <div><span>REGIME</span><b id="data-lens-regime">—</b><small id="data-lens-regime-note">The current market state.</small></div>
+          <div><span>EXECUTION MODE</span><b id="data-lens-mode">—</b><small id="data-lens-mode-note">The safest way to route an order.</small></div>
+          <div><span>RISK MIX</span><b id="data-lens-risk">—</b><small id="data-lens-risk-note">What is making execution harder or easier.</small></div>
+          <div><span>CONFIDENCE</span><b id="data-lens-confidence">—</b><small id="data-lens-confidence-note">How much of this is supported by local evidence.</small></div>
+        </div>
+      </div>
+      <div class="data-copilot" id="data-copilot-panel">
+        <div class="data-copilot-head">
+          <div>
+            <span>AGENTIC COPILOT</span>
+            <h2>What should the app do next?</h2>
+          </div>
+          <small id="data-copilot-note">The copilot synthesizes the live market, wallet, and counterparty state into a next-step plan.</small>
+        </div>
+        <div class="data-copilot-summary">
+          <div>
+            <span>PRIMARY GOAL</span>
+            <b id="data-copilot-goal">—</b>
+            <small id="data-copilot-goal-note">A single objective for the current state.</small>
+          </div>
+          <div>
+            <span>RECOMMENDED MOVE</span>
+            <b id="data-copilot-move">—</b>
+            <small id="data-copilot-move-note">The next action the UI should prioritize.</small>
+          </div>
+          <button class="button ghost" id="data-copilot-refresh" type="button">RE-EVALUATE</button>
+        </div>
+        <div class="data-copilot-comparison">
+          <div>
+            <span>CONFIDENCE</span>
+            <b id="data-copilot-confidence">—</b>
+            <small id="data-copilot-confidence-note">How strongly the current plan is supported.</small>
+          </div>
+          <div>
+            <span>SHIFT</span>
+            <b id="data-copilot-shift">—</b>
+            <small id="data-copilot-shift-note">How much the recommendation changed since the last refresh.</small>
+          </div>
+          <div>
+            <span>DOMINANT DRIVER</span>
+            <b id="data-copilot-driver">—</b>
+            <small id="data-copilot-driver-note">The main local factor behind the plan.</small>
+          </div>
+        </div>
+        <div class="data-copilot-forecast">
+          <div>
+            <span>NEXT TURN</span>
+            <b id="data-copilot-next-turn">—</b>
+            <small id="data-copilot-next-turn-note">What the copilot thinks is most likely to happen on the next refresh.</small>
+          </div>
+          <div>
+            <span>FLIP RISK</span>
+            <b id="data-copilot-flip-risk">—</b>
+            <small id="data-copilot-flip-risk-note">How likely the current recommendation is to change.</small>
+          </div>
+          <div>
+            <span>WATCHPOINT</span>
+            <b id="data-copilot-watchpoint">—</b>
+            <small id="data-copilot-watchpoint-note">The single signal most likely to move the plan.</small>
+          </div>
+        </div>
+        <div class="data-copilot-feedback" id="data-copilot-feedback-panel">
+          <div>
+            <span>LEARNING MODE</span>
+            <b id="data-copilot-learning">—</b>
+            <small id="data-copilot-learning-note">The copilot adapts from your feedback and follow-through.</small>
+          </div>
+          <div>
+            <span>HELPFUL</span>
+            <b id="data-copilot-helpful">0</b>
+            <small id="data-copilot-helpful-note">Times the guidance matched what you needed.</small>
+          </div>
+          <div>
+            <span>NOT HELPFUL</span>
+            <b id="data-copilot-unhelpful">0</b>
+            <small id="data-copilot-unhelpful-note">Times the guidance should have been sharper.</small>
+          </div>
+          <div>
+            <button class="button ghost" id="data-copilot-mark-helpful" type="button">HELPFUL</button>
+            <button class="button ghost" id="data-copilot-mark-unhelpful" type="button">NOT HELPFUL</button>
+          </div>
+        </div>
+        <div class="data-copilot-grid">
+          <div>
+            <span>WHY</span>
+            <p id="data-copilot-why">The copilot will explain the strongest local reasons behind the recommendation.</p>
+          </div>
+          <div>
+            <span>FIRST 3 STEPS</span>
+            <ol id="data-copilot-steps"><li>Waiting for live data.</li></ol>
+          </div>
+        </div>
+        <div class="data-agent" id="data-agent-panel">
+          <div class="data-agent-head">
+            <div>
+              <span>AGENT WORKBENCH</span>
+              <h3>Prioritized operating playbook</h3>
+            </div>
+            <div class="data-agent-tools">
+              <small id="data-agent-note">The agent queue will rank the next operational moves from live wallet, market, and protocol evidence.</small>
+              <label><span>OBJECTIVE</span><select id="data-agent-objective"><option value="safety">SAFETY</option><option value="execution">EXECUTION</option><option value="liquidity">LIQUIDITY</option><option value="growth">GROWTH</option></select></label>
+              <button class="button ghost" id="data-agent-rehearse" type="button">REHEARSE</button>
+            </div>
+          </div>
+          <div class="data-agent-metrics">
+            <div><span>MODE</span><b id="data-agent-mode">-</b><small id="data-agent-mode-note">Current agent posture.</small></div>
+            <div><span>QUEUE</span><b id="data-agent-depth">-</b><small id="data-agent-depth-note">Actionable tasks in priority order.</small></div>
+            <div><span>RISK GATE</span><b id="data-agent-risk">-</b><small id="data-agent-risk-note">Whether execution should be cautious.</small></div>
+          </div>
+          <div class="data-agent-rehearsal" id="data-agent-rehearsal">
+            <div><span>EXPECTED RESULT</span><b id="data-agent-result">-</b><small id="data-agent-result-note">Likely outcome if the playbook is followed.</small></div>
+            <div><span>BLOCKERS</span><b id="data-agent-blockers">-</b><small id="data-agent-blockers-note">Conditions that limit autonomy.</small></div>
+            <div><span>AUTONOMY</span><b id="data-agent-autonomy">-</b><small id="data-agent-autonomy-note">How far the agent should go without review.</small></div>
+            <div><span>NEXT CHECK</span><b id="data-agent-checkpoint">-</b><small id="data-agent-checkpoint-note">When the plan should be re-evaluated.</small></div>
+          </div>
+          <div class="data-agent-list" id="data-agent-playbook"><p class="empty">No agent tasks have been generated yet.</p></div>
+        </div>
+        <div class="data-copilot-journal" id="data-copilot-journal-panel">
+          <div class="data-copilot-journal-head">
+            <div>
+              <span>DECISION JOURNAL</span>
+              <h3>What changed and why?</h3>
+            </div>
+            <small id="data-copilot-journal-status">No decision history yet.</small>
+          </div>
+          <p id="data-copilot-journal-lead">The journal will fill as live state changes trigger new recommendations.</p>
+          <div class="data-copilot-journal-list" id="data-copilot-journal-list"><p class="empty">No recommendation changes have been recorded yet.</p></div>
+        </div>
+      </div>
+      <div class="data-timeline" id="data-timeline-panel">
+        <div class="data-timeline-head">
+          <div>
+            <span>INTELLIGENCE TIMELINE</span>
+            <h2>Recent signals, alerts, and changes</h2>
+          </div>
+          <small id="data-timeline-note">A merged view of detector output and market alerts.</small>
+        </div>
+        <div class="data-timeline-list" id="data-timeline-list"><p class="empty">No recent signals yet.</p></div>
+      </div>
       <div class="data-anomaly" id="data-anomaly-panel">
         <div class="data-anomaly-head">
           <div>
@@ -357,6 +505,14 @@
             <h2>How sensitive should the review be?</h2>
           </div>
           <small id="data-signal-note">Tune the detector and forecast lens to the level of noise you want to tolerate.</small>
+        </div>
+        <div class="data-signal-agent">
+          <div>
+            <span>AGENT ADVICE</span>
+            <b id="data-signal-brief-title">BALANCED DEFAULT</b>
+            <small id="data-signal-brief-note">The signal engine will suggest a posture based on the live mix of market and wallet evidence.</small>
+          </div>
+          <button class="button ghost" id="data-signal-autotune" type="button">AUTO-TUNE</button>
         </div>
         <div class="data-signal-controls">
           <label><span>SENSITIVITY</span><select id="data-signal-sensitivity"><option value="broad">BROAD</option><option value="balanced">BALANCED</option><option value="tight">TIGHT</option></select></label>
@@ -495,6 +651,23 @@
           </div>
           <div id="stress-template-list" class="stress-template-list"><p class="empty">No templates saved yet.</p></div>
         </div>
+        <div class="stress-template-compare" id="stress-template-compare">
+          <div class="stress-template-compare-head">
+            <span>COMPARE TEMPLATES</span>
+            <small id="stress-template-compare-note">Compare two saved scenarios or pit a saved template against the live scenario.</small>
+          </div>
+          <div class="stress-template-compare-tools">
+            <label><span>BASELINE</span><select id="stress-template-compare-left"><option value="current">CURRENT SCENARIO</option></select></label>
+            <label><span>CHALLENGER</span><select id="stress-template-compare-right"><option value="current">CURRENT SCENARIO</option></select></label>
+            <button class="button ghost" id="stress-template-compare-swap" type="button">SWAP</button>
+          </div>
+          <div class="stress-template-compare-grid">
+            <div><span>LIQUID DELTA</span><b id="stress-template-compare-liquid">—</b><small id="stress-template-compare-liquid-note">Choose two scenarios.</small></div>
+            <div><span>RESILIENCE DELTA</span><b id="stress-template-compare-score">—</b><small id="stress-template-compare-score-note">How much stronger the winner is.</small></div>
+            <div><span>RUNWAY DELTA</span><b id="stress-template-compare-runway">—</b><small id="stress-template-compare-runway-note">Modeled runway difference.</small></div>
+            <div><span>VERDICT</span><b id="stress-template-compare-verdict">—</b><small id="stress-template-compare-verdict-note">The comparator will pick the safer setup.</small></div>
+          </div>
+        </div>
         <div class="stress-metrics">
           <div><span>PROJECTED LIQUID</span><b id="stress-projected">—</b><small id="stress-projected-usd">—</small></div>
           <div><span>COMMITMENTS</span><b id="stress-commitments">—</b><small id="stress-commitment-count">—</small></div>
@@ -598,7 +771,7 @@
         <div class="activity-list-head"><div><span>LEDGER ACTIVITY</span><b>Recent confirmed events</b></div><small>Newest first</small></div>
         <div id="activity-list" class="activity-list"><p class="empty">No confirmed activity yet.</p></div>
       </div>
-      <div class="counterparty-panel">
+      <div class="counterparty-panel" id="counterparty-panel">
         <div class="section-title">
           <div><p class="eyebrow">COUNTERPARTY INTELLIGENCE</p><h2>Rank relationships by risk and trust</h2></div>
           <small>LOCAL SCORECARD</small>
@@ -636,7 +809,7 @@
         <div id="search-summary" class="search-summary">Try a block height, address, or transaction id.</div>
         <div id="search-results" class="search-results"><p class="empty">No search query yet.</p></div>
       </div>
-      <div class="watchlist-panel">
+      <div class="watchlist-panel" id="watchlist-panel">
         <div class="section-title"><div><p class="eyebrow">ADDRESS WATCHLIST</p><h2>Monitor important accounts</h2></div><small>LOCAL ONLY</small></div>
         <form id="watchlist-form" class="watchlist-form" autocomplete="off">
           <input id="watchlist-address" type="text" pattern="ec1[0-9a-f]{38}" placeholder="Add an address to watch">
